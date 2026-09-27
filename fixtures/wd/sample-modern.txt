@@ -1,0 +1,110 @@
+"General Decision Number: XX20260047 03/06/2026
+
+Superseded General Decision Number: XX20250047
+
+State: Sample State (DEMONSTRATION DATA - NOT A REAL WAGE DETERMINATION)
+
+Construction Type: Heavy
+
+Counties: Harlow and Pine Counties in Sample State.
+
+HEAVY CONSTRUCTION PROJECTS (Including Water and Sewer Line
+Construction)
+
+Note: Contracts subject to the Davis-Bacon Act are generally
+required to pay at least the applicable minimum wage rates
+established under Executive Order 13658 for contracts awarded
+between January 1, 2015 and January 29, 2022. This sample text
+exists only to demonstrate Wagebench.
+
+Modification Number     Publication Date
+          0              01/02/2026
+          1              02/13/2026
+          2              03/06/2026
+
+ CARP0187-004 06/01/2025
+
+                                  Rates          Fringes
+
+CARPENTER (Including Form Work)..$ 31.40            18.65
+----------------------------------------------------------------
+ ELEC0212-011 06/01/2025
+
+                                  Rates          Fringes
+
+ELECTRICIAN......................$ 44.00         3%+21.00
+----------------------------------------------------------------
+ ENGI0018-032 05/01/2025
+
+                                  Rates          Fringes
+
+POWER EQUIPMENT OPERATOR
+     GROUP 1.....................$ 42.15            25.10
+     GROUP 2.....................$ 39.65            25.10
+     GROUP 3.....................$ 36.90            25.10
+
+POWER EQUIPMENT OPERATOR CLASSIFICATIONS
+
+  GROUP 1: Crane; Excavator over 50 tons; Tunnel Boring
+  Machine; Horizontal Directional Drill
+
+  GROUP 2: Backhoe; Excavator; Loader; Dozer; Grader; Trencher;
+  Skid Steer over 1 cu. yd.
+
+  GROUP 3: Roller; Forklift; Skid Steer; Oiler
+----------------------------------------------------------------
+ LABO0265-006 05/01/2025
+
+                                  Rates          Fringes
+
+LABORER
+     GROUP 1.....................$ 26.85            12.40
+     GROUP 2.....................$ 27.60            12.40
+
+LABORER CLASSIFICATIONS
+
+  GROUP 1: Common or General Laborer; Flagger; Landscape
+  Laborer; Pipelayer Tender
+
+  GROUP 2: Pipelayer; Concrete Laborer; Jackhammer; Tamper
+----------------------------------------------------------------
+ PLUM0042-002 07/01/2025
+
+                                  Rates          Fringes
+
+PLUMBER/PIPEFITTER...............$ 41.90          22.34+a
+----------------------------------------------------------------
+ SUXX2024-019 11/14/2024
+
+                                  Rates          Fringes
+
+CEMENT MASON/CONCRETE FINISHER...$ 24.18 **         6.12
+TRUCK DRIVER: Dump Truck.........$ 22.75 **         5.80
+----------------------------------------------------------------
+ SUXX2024-021 11/14/2024
+
+                                  Rates          Fringes
+
+DIVER (Commercial)...............$ 612.00           9.82
+
+Amounts in "Rates' column are per day
+----------------------------------------------------------------
+
+WELDERS - Receive rate prescribed for craft performing
+operation to which welding is incidental.
+
+================================================================
+
+** Workers in this classification may be entitled to a higher
+minimum wage under Executive Order 13658. Please see the Note
+at the top of the wage determination for more information.
+
+Footnote a: Paid holidays: New Year's Day, Memorial Day,
+Independence Day, Labor Day, Thanksgiving Day, Christmas Day.
+
+Unlisted classifications needed for work not included within
+the scope of the classifications listed may be added after
+award only as provided in the labor standards contract clauses
+(29CFR 5.5 (a) (1) (iii)).
+
+END OF GENERAL DECISION"
