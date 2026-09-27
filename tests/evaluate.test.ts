@@ -317,12 +317,20 @@ describe('payroll-level checks', () => {
     expect(e.payrolls.get(e.findings[0]!.payrollId!)!.state).toBe('warnings');
   });
 
-  it('ignores a payroll that has been superseded by a correction', () => {
+  it('keeps findings on a superseded payroll as history, not open findings', () => {
     const original = payroll({ lines: [line({ rateST: 20 })] });
     const corrected = payroll({ supersedesPayrollId: original.id, lines: [line({})] });
     const e = run([original, corrected]);
     expect(e.findings).toEqual([]);
     expect(e.payrolls.get(original.id)!.state).toBe('superseded');
+    expect(e.historicalFindings.map((f) => [f.ruleId, f.amountOwed, f.supersededBy])).toEqual([
+      ['base-rate-below-wd', 274, corrected.id], // (26.85 − 20.00) × 40
+    ]);
+    // The underpayment stays in the ledger, paid through the correction unless recorded otherwise.
+    const { rows, totals } = buildLedger([...e.findings, ...e.historicalFindings], [], [contractor()]);
+    expect(rows[0]!.status).toBe('paid');
+    expect(totals.owed).toBe(274);
+    expect(totals.outstanding).toBe(0);
   });
 
   it('flags duplicate weeks and payroll-number gaps', () => {

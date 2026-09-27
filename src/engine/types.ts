@@ -281,6 +281,11 @@ export interface Finding {
   detail: string;
   /** Wages owed to the worker, in dollars, when the finding is an underpayment. */
   amountOwed: number;
+  /**
+   * Set when the finding comes from a payroll that a corrected payroll replaced. Such
+   * findings are history: not open, but kept so the restitution trail stays auditable.
+   */
+  supersededBy?: string;
 }
 
 export type RestitutionStatus = 'owed' | 'requested' | 'paid' | 'verified' | 'waived';

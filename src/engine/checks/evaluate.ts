@@ -70,7 +70,10 @@ export interface ContractorWeeks {
 }
 
 export interface Evaluation {
+  /** Findings on current payrolls and contractor-level checks. */
   findings: Finding[];
+  /** Findings on payrolls that were replaced by a correction (see Finding.supersededBy). */
+  historicalFindings: Finding[];
   lines: Map<string, LineAnalysis>;
   payrolls: Map<string, PayrollSummary>;
   weeks: ContractorWeeks[];
@@ -88,15 +91,13 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
   const byKey = new Map(classifications.map((c) => [c.key, c]));
   const contractorById = new Map(contractors.map((c) => [c.id, c]));
 
-  const superseded = new Set(
-    payrolls.map((p) => p.supersedesPayrollId).filter((id): id is string => Boolean(id)),
-  );
+  const historicalFindings: Finding[] = [];
+  const supersededBy = new Map<string, string>();
+  for (const p of payrolls) if (p.supersedesPayrollId) supersededBy.set(p.supersedesPayrollId, p.id);
+  const superseded = new Set(supersededBy.keys());
 
   for (const payroll of payrolls) {
-    if (superseded.has(payroll.id)) {
-      summaries.set(payroll.id, { payrollId: payroll.id, state: 'superseded', violations: 0, warnings: 0, owed: 0 });
-      continue;
-    }
+    const replacedBy = supersededBy.get(payroll.id);
     const contractor = contractorById.get(payroll.contractorId);
     const pf: Finding[] = [];
     const add = (f: Omit<Finding, 'key' | 'contractorId' | 'payrollId' | 'weekEnding'> & { keySuffix?: string }) => {
@@ -184,12 +185,13 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
     const owed = cents(sum(pf.map((f) => f.amountOwed)));
     summaries.set(payroll.id, {
       payrollId: payroll.id,
-      state: violations > 0 ? 'violations' : warnings > 0 ? 'warnings' : 'clean',
+      state: replacedBy ? 'superseded' : violations > 0 ? 'violations' : warnings > 0 ? 'warnings' : 'clean',
       violations,
       warnings,
       owed,
     });
-    findings.push(...pf);
+    if (replacedBy) historicalFindings.push(...pf.map((f) => ({ ...f, supersededBy: replacedBy })));
+    else findings.push(...pf);
   }
 
   // Contractor-level: duplicates, numbering gaps, missing weeks.
@@ -220,7 +222,7 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
   }
 
   const totalOwed = cents(sum(findings.map((f) => f.amountOwed)));
-  return { findings, lines, payrolls: summaries, weeks, totalOwed };
+  return { findings, historicalFindings, lines, payrolls: summaries, weeks, totalOwed };
 }
 
 // ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "dexie": "^4.4.6",
+    "docx": "^9.8.0",
     "papaparse": "^5.7.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.3.289",

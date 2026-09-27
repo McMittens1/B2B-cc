@@ -22,7 +22,9 @@ export interface LedgerTotals {
 /**
  * Join computed underpayment findings with the reviewer's restitution tracking.
  * Findings are recomputed from payroll data every time, so records are keyed by
- * finding key; a record whose finding disappeared (payroll corrected) is dropped.
+ * finding key. Underpayments on payrolls that a correction replaced stay in the ledger
+ * (pass them in with `supersededBy` set); unless the reviewer recorded otherwise they
+ * count as paid through the corrected payroll, pending verification.
  */
 export function buildLedger(
   findings: readonly Finding[],
@@ -35,9 +37,16 @@ export function buildLedger(
   for (const f of findings) {
     if (f.amountOwed <= 0) continue;
     const r = byKey.get(f.key);
-    const status: RestitutionStatus = r?.status ?? 'owed';
+    const corrected = Boolean(f.supersededBy);
+    const status: RestitutionStatus = r?.status ?? (corrected ? 'paid' : 'owed');
     const amountPaid =
-      status === 'waived' ? 0 : r ? cents(Math.min(Math.max(0, r.amountPaid), f.amountOwed)) : 0;
+      status === 'waived'
+        ? 0
+        : r
+          ? cents(Math.min(Math.max(0, r.amountPaid), f.amountOwed))
+          : corrected
+            ? f.amountOwed
+            : 0;
     const balance = status === 'waived' || status === 'verified' ? 0 : cents(f.amountOwed - amountPaid);
     rows.push({
       finding: f,
@@ -46,7 +55,7 @@ export function buildLedger(
       amountOwed: f.amountOwed,
       amountPaid,
       balance,
-      note: r?.note ?? '',
+      note: r?.note ?? (corrected ? 'Corrected payroll received; verify proof of payment.' : ''),
       updatedAt: r?.updatedAt ?? null,
     });
   }
