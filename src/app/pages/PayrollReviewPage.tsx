@@ -133,7 +133,13 @@ export function PayrollReviewPage({ view, payrollId }: { view: ProjectView; payr
         subtitle={contractor?.name}
         actions={
           <>
-            <Button icon="stamp" disabled={busy !== null} onClick={() => run('Review stamp', () => downloadStampedPayroll(view, payroll))}>
+            <Button icon="stamp" disabled={busy !== null} onClick={() =>
+                run('Stamped PDF', async () => {
+                  const problem = await downloadStampedPayroll(view, payroll);
+                  toast(problem ? `Stamped PDF downloaded without the original: ${problem}` : 'Stamped PDF downloaded', problem ? 'bad' : undefined);
+                })
+              }
+            >
               Stamped PDF
             </Button>
             {open.some((f) => f.severity === 'violation') && (

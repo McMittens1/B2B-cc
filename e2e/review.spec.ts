@@ -134,6 +134,46 @@ test('backup, delete and restore round-trips a project', async ({ page }) => {
   await expect(page.getByRole('link', { name: /\.pdf$/ })).toBeVisible(); // original PDF restored with the backup
 });
 
+test('letters, stamped payrolls and exports are generated from the review', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /demo project/ }).first().click();
+  await expect(page).toHaveURL(/overview/, { timeout: 60_000 });
+  await page.getByRole('link', { name: /Letters & documents/ }).click();
+  await expect(page.getByRole('heading', { name: 'Letters & documents' })).toBeVisible();
+
+  // Correction request: preview shows the back-wage table, and both formats download.
+  await page.getByRole('row').filter({ hasText: 'Kessler Electric' }).getByRole('button', { name: 'Correction request' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Back wages due', { exact: true })).toBeVisible();
+  await expect(dialog.getByRole('cell', { name: '$1,011.92' }).first()).toBeVisible();
+  for (const [button, ext, magic] of [['Word', '.docx', 'PK'], ['PDF', '.pdf', '%PDF']] as const) {
+    const download = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: button, exact: true }).click();
+    const d = await download;
+    expect(d.suggestedFilename()).toMatch(new RegExp(`Kessler Electric.*\\${ext}$`));
+    expect(fs.readFileSync((await d.path())!).subarray(0, magic.length).toString('latin1')).toBe(magic);
+  }
+  await page.keyboard.press('Escape');
+
+  // A contractor with nothing overdue cannot be sent a missing-payroll letter.
+  await expect(page.getByRole('row').filter({ hasText: 'Kessler Electric' }).getByRole('button', { name: 'Missing payrolls' })).toBeDisabled();
+
+  // One stamped payroll, from the contractor's own PDF.
+  const stampRow = page.getByRole('table', { name: 'Stamped payrolls' }).getByRole('row').filter({ hasText: 'Ridgeline' }).first();
+  const stamped = page.waitForEvent('download');
+  await stampRow.getByRole('button', { name: 'PDF' }).click();
+  const file = await stamped;
+  expect(file.suggestedFilename()).toMatch(/Ridgeline Concrete LLC payroll .* reviewed\.pdf$/);
+  const bytes = fs.readFileSync((await file.path())!);
+  expect(bytes.subarray(0, 4).toString('latin1')).toBe('%PDF');
+  expect(bytes.length).toBeGreaterThan(50_000); // the original form pages are carried through
+
+  // Restitution ledger as a workbook.
+  const ledger = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Excel' }).click();
+  expect((await ledger).suggestedFilename()).toMatch(/restitution ledger .*\.xlsx$/);
+});
+
 test('bad input is explained, not crashed on', async ({ page }) => {
   await newProjectWithWd(page, 'E2E Bad Files');
   await page.getByRole('button', { name: 'Add payrolls' }).first().click();

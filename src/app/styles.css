@@ -270,6 +270,17 @@ dialog.modal::backdrop { background: rgba(15, 23, 42, 0.45); }
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; }
 
+/* Letter preview: reads like the printed letter, not like the app. */
+.letter { font-size: 13.5px; line-height: 1.55; color: var(--ink); max-width: 760px; margin: 0 auto; }
+.letter p { margin: 0 0 10px; }
+.letter .letter-lines { white-space: pre-line; margin-bottom: 12px; }
+.letter .letter-title { font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 8px; }
+.letter .kv { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.letter .letter-table { margin: 4px 0 14px; }
+.letter table.data { font-size: 12.5px; }
+table.data tr.total td { font-weight: 650; border-top: 1px solid var(--line-strong); }
+.panel-header .select { width: auto; min-width: 0; }
+
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
 .tab { all: unset; cursor: pointer; padding: 8px 12px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: 13.5px; }
 .tab:hover { color: var(--ink); }

@@ -16,7 +16,7 @@ It needs no portal and asks nothing of your contractors. They keep emailing what
 
 ## Quick start
 
-Requirements: Node.js 20.19+ (or 22+) and npm.
+Requirements: Node.js 22.13 or newer, and npm. (`.nvmrc` pins 22.)
 
 ```bash
 git clone <this repository>
@@ -47,8 +47,12 @@ npm run preview        # serves dist/ at http://localhost:4173
    - **Scanned or photographed payrolls** → keyed in on a fast grid that carries last week's crew forward.
 5. **Match job titles** once per contractor ("Backhoe Operator" → *POWER EQUIPMENT OPERATOR — GROUP 2*). Suggestions use the WD's own group definitions. From then on, every payroll from that contractor is checked automatically.
 6. **Review** each payroll: paid versus required for every worker line, with the math shown. Mark it reviewed, accepted, or correction requested.
-7. **Follow up**: generate a correction and restitution letter (Word or PDF), track each underpayment from *owed* → *requested* → *paid* → *verified*, and record corrected payrolls (the original is kept but no longer counted).
-8. **Document**: download the stamped payroll (the original PDF with a review notation plus a review worksheet page) for the reimbursement request or monitoring file.
+7. **Follow up** (*Exceptions* and *Restitution*): triage every finding across the project, track each underpayment from *owed* → *requested* → *paid* → *verified* (or *waived*, with a note), and record corrected payrolls. The original is kept but no longer counted.
+8. **Document** (*Letters & documents*):
+   - a **correction request** per contractor (back wages by worker and week, with the arithmetic, and the other items to fix) and a **missing payrolls** letter, previewed first and downloaded as Word (to put on letterhead), PDF or plain text;
+   - a **review memo to file** summarizing the whole project for the monitoring file or the funding agency;
+   - **stamped payrolls**: the contractor's own PDF with a review notation on page 1 ("REVIEWED against WD … · date · reviewer" and the result), followed by a Payroll Review Worksheet. Download one, or all of a contractor's payrolls as a single PDF;
+   - the restitution ledger as an Excel workbook and all findings as CSV.
 
 ## What is checked
 
@@ -72,10 +76,12 @@ Underpayments are computed exactly, in cents, per worker per week, and every amo
 ## Tests
 
 ```bash
-npm test          # unit tests (engine, parsers, importers, PDF, documents)
+npm test          # unit tests: WD parser, checks, importers, PDF reading/filling, documents
 npm run e2e       # browser tests against the production build (Playwright + Chromium)
 npm run check     # typecheck + unit tests + production build
 ```
+
+The unit tests use hand-computed amounts (for example, a 3%+$21.00 fringe paid as $21.00 flat on a $44.00 electrician is $1.32/hr short, $52.80 for 40 hours) and the real wage determinations in `fixtures/wd/`. The browser tests need Chromium: `npx playwright install chromium` if you do not have it.
 
 ## Project layout
 

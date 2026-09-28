@@ -4,10 +4,10 @@
   "private": true,
   "description": "Certified payroll review desk: check weekly contractor payrolls against the Davis-Bacon wage determination, track missing weeks and restitution, and produce review documentation. Runs entirely in the browser.",
   "type": "module",
-  "license": "UNLICENSED",
   "engines": {
-    "node": ">=20.19"
+    "node": ">=22.13"
   },
+  "license": "UNLICENSED",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
