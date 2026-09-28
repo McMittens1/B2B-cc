@@ -238,7 +238,7 @@ export function ContractorsPage({ view }: { view: ProjectView }) {
                         <span title={c.apprenticePrograms.map((p) => p.name || 'Unnamed program').join('\n')}>{c.apprenticePrograms.length}</span>
                       )}
                       {s.unverifiedApprentices > 0 && (
-                        <div className="sub" title="Apprentice lines that can't be checked until a registered program with a wage percentage is recorded">
+                        <div className="sub" title="Apprentice lines with no registered program on file (checked at the journeyworker rate) or no wage percentage recorded">
                           <span className="cell-warn">{s.unverifiedApprentices} unverified</span>
                         </div>
                       )}
@@ -676,16 +676,17 @@ function ContractorForm({
       {unverified.count > 0 && (
         <div style={{ marginBottom: 10 }}>
           <Alert tone="warn">
-            {plural(unverified.count, 'apprentice line')} on this contractor’s payrolls can’t be checked until a program with a wage percentage is
-            recorded{unverified.titles.length > 0 ? ` (${unverified.titles.join(', ')})` : ''}.
+            {plural(unverified.count, 'apprentice line')} on this contractor’s payrolls {unverified.count === 1 ? 'has' : 'have'} no registered program with a wage
+            percentage on file{unverified.titles.length > 0 ? ` (${unverified.titles.join(', ')})` : ''}. Lines with no program are checked at the full
+            journeyworker rate; record the program to check them at the apprentice rate.
           </Alert>
         </div>
       )}
 
       {draft.programs.length === 0 ? (
         <div className="muted small" style={{ padding: '12px 14px', border: '1px dashed var(--line-strong)', borderRadius: 'var(--radius-sm)' }}>
-          No programs recorded. Apprentices on this contractor’s payrolls are flagged as unverified, and their rates are not checked until a program is
-          added.
+          No programs recorded. Apprentices on this contractor’s payrolls are checked at the full journeyworker rate, as the rules require for an
+          apprentice who is not registered, until their program is added here.
         </div>
       ) : (
         <div className="table-wrap" style={{ border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)' }}>

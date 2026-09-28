@@ -43,7 +43,7 @@ npm run preview        # serves dist/ at http://localhost:4173
 3. **Contractors** → the prime and each subcontractor, with start dates (so missing weeks are detected) and any registered apprenticeship programs (wage %, fringe %, ratio).
 4. **Add payrolls** → drop in files as received:
    - **WH-347 PDFs** (Rev. January 2025) produced by payroll software or DOL's online form. They are read automatically; anything uncertain is flagged for you to confirm.
-   - **CSV or Excel** exports from payroll systems (QuickBooks-, Gusto-, ADP-style registers, or the WH-347 layout). Columns are detected, and the mapping is remembered per contractor.
+   - **CSV or Excel (.xlsx)** exports from payroll systems (QuickBooks-, Gusto-, ADP-style registers, or the WH-347 layout). Columns are detected; once you confirm a layout, later files with the same header row reuse it and pre-select the contractor. Old Excel 97-2003 (.xls) files must be re-saved as .xlsx or CSV.
    - **Scanned or photographed payrolls** → keyed in on a fast grid that carries last week's crew forward.
 5. **Match job titles** once per contractor ("Backhoe Operator" → *POWER EQUIPMENT OPERATOR — GROUP 2*). Suggestions use the WD's own group definitions. From then on, every payroll from that contractor is checked automatically.
 6. **Review** each payroll: paid versus required for every worker line, with the math shown. Mark it reviewed, accepted, or correction requested.
