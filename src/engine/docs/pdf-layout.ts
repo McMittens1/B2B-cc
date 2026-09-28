@@ -168,7 +168,8 @@ export function fitColumnWidths(natural: readonly number[], minimum: readonly nu
 export function truncateText(text: string, font: PDFFont, size: number, maxWidth: number): string {
   const clean = toWinAnsi(text);
   if (font.widthOfTextAtSize(clean, size) <= maxWidth) return clean;
-  const chars = [...clean];
+  // No Helvetica glyph is narrower than 0.2 em, so nothing past this many characters can fit.
+  const chars = [...clean].slice(0, Math.ceil(maxWidth / (size * 0.2)) + 1);
   while (chars.length > 0 && font.widthOfTextAtSize(`${chars.join('').trimEnd()}...`, size) > maxWidth) chars.pop();
   return chars.length ? `${chars.join('').trimEnd()}...` : '';
 }

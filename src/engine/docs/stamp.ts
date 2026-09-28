@@ -97,7 +97,7 @@ export function reviewResult(ctx: Pick<StampContext, 'payroll' | 'findings'>): R
 }
 
 /**
- * The two-line review notation, e.g. "REVIEWED against WD OH20260047 Mod 2 - 9/27/2026 -
+ * The two-line review notation, e.g. "REVIEWED against WD OH20260047 Mod 2 · 9/27/2026 ·
  * J. Rivera, Labor Standards Officer" and "Result: 2 violations, $601.20 owed". Some CDBG
  * programs require payrolls to carry a notation showing they were compared with the wage
  * determination; the same text heads the worksheet so the two always agree.
@@ -215,25 +215,26 @@ function removeActiveContent(doc: PDFDocument): void {
   const catalog = doc.catalog;
   attempt(() => catalog.delete(PDFName.of('OpenAction')));
   attempt(() => catalog.delete(PDFName.of('AA')));
+  attempt(() => catalog.delete(PDFName.of('NeedsRendering')));
   attempt(() => catalog.lookupMaybe(PDFName.of('Names'), PDFDict)?.delete(PDFName.of('JavaScript')));
-  attempt(() => {
-    const form = catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict);
-    form?.delete(PDFName.of('XFA'));
-    form?.delete(PDFName.of('NeedsRendering'));
-  });
+  attempt(() => catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict)?.delete(PDFName.of('XFA')));
   for (const page of doc.getPages()) {
     attempt(() => page.node.delete(PDFName.of('AA')));
+    let annots: PDFArray | undefined;
     attempt(() => {
-      const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
-      for (let i = 0; annots && i < annots.size(); i++) {
-        const annot = annots.lookupMaybe(i, PDFDict);
-        if (!annot) continue;
+      annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
+    });
+    for (let i = 0; annots && i < annots.size(); i++) {
+      const list = annots;
+      attempt(() => {
+        const annot = list.lookupMaybe(i, PDFDict);
+        if (!annot) return;
         annot.delete(PDFName.of('AA'));
         const action = annot.lookupMaybe(PDFName.of('A'), PDFDict);
         const kind = action?.lookupMaybe(PDFName.of('S'), PDFName)?.decodeText();
         if (kind && ACTIVE_ACTIONS.has(kind)) annot.delete(PDFName.of('A'));
-      }
-    });
+      });
+    }
   }
 }
 
@@ -334,7 +335,7 @@ function stampFirstPage(page: PDFPage, ctx: StampContext, fonts: FlowFonts, work
 type WorksheetSource = { kind: 'stamped'; originalPages: number } | { kind: 'generated'; problem: string | null };
 
 interface CheckDefinition {
-  label: string;
+  label: string | ((ctx: StampContext) => string);
   rules: RuleId[];
   /** Needs payroll lines (skipped on a "no work" payroll). */
   lineLevel?: boolean;
@@ -402,7 +403,7 @@ const CHECKS: CheckDefinition[] = [
     rules: ['soc-missing'],
   },
   {
-    label: 'Submitted on time',
+    label: (ctx) => `Submitted on time (within ${ctx.project.settings.lateAfterDays} days of the week ending)`,
     rules: ['late-submission'],
     skip: (ctx) => (ctx.payroll.receivedDate ? null : 'Received date not recorded'),
   },
@@ -415,10 +416,7 @@ const CHECKS: CheckDefinition[] = [
 function checkRows(ctx: StampContext, findings: Finding[]): FlowCell[][] {
   const unmatched = findings.filter((f) => f.ruleId === 'classification-unmapped' || f.ruleId === 'classification-not-on-wd').length;
   return CHECKS.map((check) => {
-    const label =
-      check.rules.includes('late-submission')
-        ? `Submitted on time (within ${ctx.project.settings.lateAfterDays} days of the week ending)`
-        : check.label;
+    const label = typeof check.label === 'function' ? check.label(ctx) : check.label;
     let result: string;
     const skipped = check.skip?.(ctx) ?? null;
     if (check.lineLevel && ctx.payroll.noWork) result = 'No work reported';
