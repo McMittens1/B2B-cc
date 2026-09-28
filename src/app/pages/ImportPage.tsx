@@ -228,8 +228,8 @@ export function ImportPage({ view }: { view: ProjectView }) {
       }
     }
     if (result.status !== 'ok') {
+      // No recognizable header: keep the draft so the reviewer can match columns from its card.
       update(draft.id, { state: result.status === 'no-header' ? 'ready' : 'failed', error: result.message, table: result, warnings: result.warnings, kind: result.sourceKind ?? 'csv' });
-      if (result.status === 'no-header') setMapping(draft.id);
       return;
     }
     const contractor =
