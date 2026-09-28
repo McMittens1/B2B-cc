@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import JSZip from 'jszip';
-import { PDFDocument, StandardFonts, degrees } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, PDFString, StandardFonts, degrees } from 'pdf-lib';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { evaluateProject } from '../src/engine/checks/evaluate';
 import { buildLedger } from '../src/engine/restitution';
@@ -419,6 +419,41 @@ describe('buildStampedPayroll with the contractor original', () => {
     expect(item.y).toBeLessThan(40);
     expect(item.x).toBeGreaterThan(first!.width - 460);
     expect(item.x).toBeLessThan(first!.width);
+  });
+
+  it('removes scripts, launch actions and XFA from the stamped copy but keeps plain links', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    const ctx = doc.context;
+    const js = ctx.obj({ S: 'JavaScript', JS: PDFString.of('app.alert("hi")') });
+    doc.catalog.set(PDFName.of('OpenAction'), js);
+    doc.catalog.set(PDFName.of('AA'), ctx.obj({ WC: js }));
+    doc.catalog.set(PDFName.of('Names'), ctx.obj({ JavaScript: ctx.obj({ Names: [PDFString.of('x'), js] }) }));
+    doc.catalog.set(PDFName.of('AcroForm'), ctx.obj({ Fields: [], XFA: PDFString.of('<xdp/>') }));
+    page.node.set(PDFName.of('AA'), ctx.obj({ O: js }));
+    const link = (action: Record<string, unknown>) =>
+      ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Link', Rect: [10, 10, 100, 30], A: ctx.obj(action as never) }));
+    page.node.set(
+      PDFName.of('Annots'),
+      ctx.obj([
+        link({ S: 'Launch', F: PDFString.of('calc.exe') }),
+        link({ S: 'URI', URI: PDFString.of('https://www.dol.gov/') }),
+      ]),
+    );
+    const result = await buildStampedPayroll(await doc.save(), stampContext());
+    expect(result.usedOriginal).toBe(true);
+
+    const out = await PDFDocument.load(result.bytes);
+    expect(out.catalog.get(PDFName.of('OpenAction'))).toBeUndefined();
+    expect(out.catalog.get(PDFName.of('AA'))).toBeUndefined();
+    expect(out.catalog.lookup(PDFName.of('Names'), PDFDict).get(PDFName.of('JavaScript'))).toBeUndefined();
+    expect(out.catalog.lookup(PDFName.of('AcroForm'), PDFDict).get(PDFName.of('XFA'))).toBeUndefined();
+    const first = out.getPage(0).node;
+    expect(first.get(PDFName.of('AA'))).toBeUndefined();
+    const annots = first.lookup(PDFName.of('Annots'), PDFArray);
+    const actions = annots.asArray().map((_, i) => annots.lookup(i, PDFDict).lookupMaybe(PDFName.of('A'), PDFDict));
+    expect(actions[0]).toBeUndefined();
+    expect(actions[1]?.lookup(PDFName.of('S'), PDFName).decodeText()).toBe('URI');
   });
 
   it('keeps every page of a multi-page original', async () => {

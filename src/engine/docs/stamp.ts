@@ -1,4 +1,4 @@
-import { PDFDocument, degrees, rgb, type PDFPage, type RGB } from 'pdf-lib';
+import { PDFArray, PDFDict, PDFDocument, PDFName, degrees, rgb, type PDFPage, type RGB } from 'pdf-lib';
 import type { LineAnalysis } from '../checks/evaluate';
 import { daysBetween, formatDate, isIsoDate } from '../dates';
 import { cents, formatHours, formatMoney, formatRate, sum } from '../money';
@@ -169,6 +169,7 @@ async function stampOriginal(original: Uint8Array, ctx: StampContext): Promise<S
   const pages = doc.getPages();
   const first = pages[0];
   if (!first) throw new OriginalProblem('The original PDF has no pages.');
+  removeActiveContent(doc);
   const fonts = await embedStandardFonts(doc);
   const worksheetPage = pages.length + 1;
   stampFirstPage(first, ctx, fonts, worksheetPage);
@@ -194,6 +195,46 @@ async function generateWithoutOriginal(ctx: StampContext, problem: string | null
   flow.finish(worksheetFooter(ctx));
   const bytes = await doc.save();
   return { bytes, usedOriginal: false, originalProblem: problem, pageCount: doc.getPageCount(), worksheetPage: 1 };
+}
+
+const ACTIVE_ACTIONS = new Set(['JavaScript', 'Launch', 'SubmitForm', 'ImportData', 'ResetForm', 'Rendition']);
+
+/**
+ * Drop scripts, launch actions and XFA from the copy being stamped. The reviewer passes
+ * this copy on to others, and a viewer that finds XFA renders the XFA form instead of the
+ * page content, which would hide the notation. Page content itself is left untouched.
+ */
+function removeActiveContent(doc: PDFDocument): void {
+  const attempt = (fn: () => void) => {
+    try {
+      fn();
+    } catch {
+      // A malformed entry of an unexpected type is left alone; it cannot be followed either.
+    }
+  };
+  const catalog = doc.catalog;
+  attempt(() => catalog.delete(PDFName.of('OpenAction')));
+  attempt(() => catalog.delete(PDFName.of('AA')));
+  attempt(() => catalog.lookupMaybe(PDFName.of('Names'), PDFDict)?.delete(PDFName.of('JavaScript')));
+  attempt(() => {
+    const form = catalog.lookupMaybe(PDFName.of('AcroForm'), PDFDict);
+    form?.delete(PDFName.of('XFA'));
+    form?.delete(PDFName.of('NeedsRendering'));
+  });
+  for (const page of doc.getPages()) {
+    attempt(() => page.node.delete(PDFName.of('AA')));
+    attempt(() => {
+      const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
+      for (let i = 0; annots && i < annots.size(); i++) {
+        const annot = annots.lookupMaybe(i, PDFDict);
+        if (!annot) continue;
+        annot.delete(PDFName.of('AA'));
+        const action = annot.lookupMaybe(PDFName.of('A'), PDFDict);
+        const kind = action?.lookupMaybe(PDFName.of('S'), PDFName)?.decodeText();
+        if (kind && ACTIVE_ACTIONS.has(kind)) annot.delete(PDFName.of('A'));
+      }
+    });
+  }
 }
 
 function worksheetFooter(ctx: StampContext): string {
