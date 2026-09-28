@@ -8,8 +8,15 @@ export { groupLines, splitWords, wdTextFromPdf } from './lines';
 export type { PdfTextLine } from './lines';
 export { parseWh347 } from './wh347-parse';
 export type { LowConfidence, Wh347Line, Wh347Meta, Wh347ParseResult, Wh347Statement } from './wh347-parse';
-export { defaultDays, fillWh347 } from './wh347-fill';
-export type { Wh347ApprenticeProgram, Wh347Day, Wh347FillData, Wh347FillWorker, Wh347FringePlan } from './wh347-fill';
+export { defaultDays, fillWh347, splitWorkerName, wh347FromPayroll } from './wh347-fill';
+export type {
+  Wh347ApprenticeProgram,
+  Wh347Day,
+  Wh347FillData,
+  Wh347FillWorker,
+  Wh347FringePlan,
+  Wh347FromPayrollInput,
+} from './wh347-fill';
 
 export interface PayrollPdfImport extends Wh347ParseResult {
   /** False for scanned or image-only PDFs, which have to be keyed in. */

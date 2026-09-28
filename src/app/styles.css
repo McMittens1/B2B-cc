@@ -135,6 +135,7 @@ textarea.input.code { font-family: var(--mono); font-size: 12px; white-space: pr
 .input.num { text-align: right; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field > label, .field > .label { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+label.field { cursor: default; }
 .field .hint { font-size: 12px; color: var(--muted); }
 .field .error { font-size: 12px; color: var(--bad); }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px 16px; }
@@ -298,6 +299,14 @@ dialog.modal::backdrop { background: rgba(15, 23, 42, 0.45); }
   .topbar .privacy { display: none; }
   .form-grid .span-2 { grid-column: auto; }
 }
+@media (max-width: 600px) {
+  .topbar { gap: 8px; padding: 0 10px; }
+  .topbar .sep, .topbar .project-name { display: none; }
+  .kpis { grid-template-columns: 1fr; }
+  .page-header .titles { min-width: 0; }
+  .toolbar .input, .toolbar .select { min-width: 0; width: 100%; }
+  dialog.modal .form-grid { grid-template-columns: 1fr; }
+}
 .mobile-nav { display: none; gap: 4px; overflow-x: auto; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--line); }
 .mobile-nav .nav-item { white-space: nowrap; }
 
@@ -308,3 +317,6 @@ dialog.modal::backdrop { background: rgba(15, 23, 42, 0.45); }
   body { background: #fff; }
   .panel { box-shadow: none; }
 }
+
+/* Keyboard focus for controls that reset their styles with `all: unset`. */
+.tab:focus-visible, table.data th button.sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

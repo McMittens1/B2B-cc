@@ -81,14 +81,19 @@ export function splitWords(item: PdfTextItem): PdfTextItem[] {
  * leading spaces and splits runs at space gaps, so this lays every run back on
  * a character grid computed from the dominant font's character width, and
  * restores blank lines from the vertical gaps between baselines. Runs in other
- * font sizes (browser print headers and footers) are dropped.
+ * fonts or sizes (browser print headers and footers) are dropped.
  */
 export function wdTextFromPdf(pages: readonly PdfTextPage[]): string {
   const all = pages.flatMap((p) => p.items.filter((i) => i.angle === 0 && i.str.trim() !== ''));
   if (all.length === 0) return '';
 
   const bodySize = dominantFontSize(all);
-  const inBody = (i: PdfTextItem) => Math.abs(i.fontSize - bodySize) <= 0.2 * bodySize;
+  const bodyFont = dominantFontName(all);
+  const sameSize = (i: PdfTextItem) => Math.abs(i.fontSize - bodySize) <= 0.2 * bodySize;
+  // Prefer the determination's own fixed-pitch font; fall back to size when fonts are unnamed.
+  const inBody = all.some((i) => i.fontName === bodyFont && i.monospace)
+    ? (i: PdfTextItem) => sameSize(i) && (i.fontName === bodyFont || i.monospace)
+    : sameSize;
   const bodyItems = all.filter(inBody);
   const charW = estimateCharWidth(bodyItems, bodySize);
 
@@ -101,20 +106,25 @@ export function wdTextFromPdf(pages: readonly PdfTextPage[]): string {
   const pageLines = normalized.map((items) => groupLines(items, { yTolerance: 0.3 * bodySize }));
   const pitch = linePitch(pageLines, bodySize);
 
+  const laidOut = pageLines
+    .map((lines) => lines.map((l) => ({ y: l.y, text: layoutLine(l.items, minX, charW) })).filter((l) => !isPrintChrome(l.text)))
+    .filter((lines) => lines.length > 0);
+
+  // Every page's text starts at the same top margin and runs to the same bottom
+  // margin, so a page that starts lower (or ends higher) had blank lines there.
+  const top = Math.max(...laidOut.map((l) => l[0]!.y));
+  const bottom = Math.min(...laidOut.slice(0, -1).map((l) => l[l.length - 1]!.y));
+  const blankLines = (above: number, below: number) => Math.max(0, Math.round((above - below) / pitch));
+
   const out: string[] = [];
-  for (const lines of pageLines) {
-    let prevY: number | null = null;
-    for (const line of lines) {
-      const text = layoutLine(line.items, minX, charW);
-      if (isPrintChrome(text)) continue;
-      if (prevY !== null) {
-        const blanks = Math.max(0, Math.round((prevY - line.y) / pitch) - 1);
-        for (let b = 0; b < Math.min(blanks, 3); b++) out.push('');
-      }
-      out.push(text);
-      prevY = line.y;
-    }
-  }
+  laidOut.forEach((lines, p) => {
+    if (p > 0) out.push(...Array<string>(blankLines(top, lines[0]!.y)).fill(''));
+    lines.forEach((line, i) => {
+      if (i > 0) out.push(...Array<string>(Math.max(0, blankLines(lines[i - 1]!.y, line.y) - 1)).fill(''));
+      out.push(line.text);
+    });
+    if (p < laidOut.length - 1) out.push(...Array<string>(blankLines(lines[lines.length - 1]!.y, bottom)).fill(''));
+  });
   return out.join('\n');
 }
 
@@ -129,7 +139,8 @@ function layoutLine(items: readonly PdfTextItem[], minX: number, charW: number):
   for (const item of [...items].sort((a, b) => a.x - b.x)) {
     const col = Math.max(0, Math.round((item.x - minX) / charW));
     if (col > s.length) s += ' '.repeat(col - s.length);
-    else if (s.length > 0 && !s.endsWith(' ')) s += ' ';
+    // A run that starts before the previous one ends is off-grid; keep the words apart.
+    else if (col < s.length && !s.endsWith(' ')) s += ' ';
     s += item.str;
   }
   return s.replace(/\s+$/, '');
@@ -150,6 +161,20 @@ function dominantFontSize(items: readonly PdfTextItem[]): number {
     }
   }
   return best > 0 ? best : 10;
+}
+
+function dominantFontName(items: readonly PdfTextItem[]): string {
+  const weight = new Map<string, number>();
+  for (const i of items) weight.set(i.fontName, (weight.get(i.fontName) ?? 0) + i.str.trim().length);
+  let best = '';
+  let bestWeight = -1;
+  for (const [name, w] of weight) {
+    if (w > bestWeight) {
+      best = name;
+      bestWeight = w;
+    }
+  }
+  return best;
 }
 
 function estimateCharWidth(items: readonly PdfTextItem[], fontSize: number): number {
@@ -180,6 +205,7 @@ function linePitch(pageLines: readonly PdfTextLine[][], fontSize: number): numbe
 
 const PRINT_CHROME = [
   /^\s*Page\s+\d+\s+of\s+\d+\s*$/i,
+  /^\s*\d{1,2}\/\d{1,2}\/\d{2,4},\s+\d{1,2}:\d{2}\s*(AM|PM)?\b/i,
   /^\s*\d+\s*\/\s*\d+\s*$/,
   /^\s*https?:\/\/\S+\s*(\d+\s*\/\s*\d+)?\s*$/i,
 ];

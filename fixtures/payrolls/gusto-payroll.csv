@@ -1,0 +1,4 @@
+Pay Period Start,Pay Period End,Check Date,Employee Last Name,Employee First Name,Job Title,Regular Hours,Overtime Hours,Regular Earnings,Overtime Earnings,Gross Earnings,Employee Taxes,Employee Deductions,Net Pay
+2026-06-07,2026-06-13,2026-06-19,Lindqvist,Hanna,Electrician,40,5,1760.00,330.00,2090.00,412.55,64.00,1613.45
+2026-06-07,2026-06-13,2026-06-19,Mbeki,Thabo,Electrician Apprentice 2nd Year,32,0,844.80,0.00,844.80,138.20,0.00,706.60
+2026-06-07,2026-06-13,2026-06-19,Castellanos,Rafael,Electrician,40,3,1760.00,198.00,1958.00,380.10,64.00,1513.90

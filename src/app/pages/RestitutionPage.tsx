@@ -482,7 +482,9 @@ export function RestitutionPage({ view }: { view: ProjectView }) {
           <div className="sub">{awaitingProof > 0 ? `${formatMoney(awaitingProof)} awaiting proof of payment` : 'None awaiting proof of payment'}</div>
         </div>
         <div className="kpi">
-          <div className="label">Outstanding (not verified)</div>
+          <div className="label" title="Amounts owed less payments the contractor reports, on items not yet verified or waived">
+            Outstanding balance (not verified)
+          </div>
           <div className={`value ${t.outstanding > 0 ? 'bad' : ''}`}>{formatMoney(t.outstanding)}</div>
           <div className="sub">
             {plural(openCount, 'open item')}
@@ -573,9 +575,7 @@ export function RestitutionPage({ view }: { view: ProjectView }) {
           <select className="select" value={status} onChange={(e) => changeStatusFilter(e.target.value as '' | RestitutionStatus)} aria-label="Filter by status">
             <option value="">Any status</option>
             {STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {RESTITUTION_STATUS_LABELS[s]} ({statusCounts[s]})
-              </option>
+              <option key={s} value={s}>{`${RESTITUTION_STATUS_LABELS[s]} (${statusCounts[s]})`}</option>
             ))}
           </select>
           <label className="check">

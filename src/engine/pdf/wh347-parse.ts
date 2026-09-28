@@ -168,7 +168,7 @@ export function parseWh347(pages: readonly PdfTextPage[]): Wh347ParseResult {
       'No worker rows could be read from the payroll sheet. If the PDF shows entries, they may be drawn as images; key them in.',
     );
   }
-  if (sheets.some((s) => s.frame.poorFit)) {
+  if ([...sheets, ...statements].some((s) => s.frame.poorFit)) {
     result.warnings.push('The form labels are not where the official form puts them; check the imported values against the PDF.');
   }
 
@@ -208,7 +208,7 @@ function emptyMeta(): Wh347Meta {
 
 function normalize(s: string): string {
   return s
-    .replace(/[‘’ʼ`´]/g, "'")
+    .replace(/[\u2018\u2019\u02bc`\u00b4]/g, "'")
     .replace(/\s+/g, ' ')
     .trim()
     .toUpperCase();
@@ -324,7 +324,7 @@ function locateAnchors(items: readonly PdfTextItem[], anchors: readonly Anchor[]
   candidates.forEach((c, i) => {
     const anchor = anchors[i]!;
     const pool = c.exact.length > 0 ? c.exact : c.partial;
-    let best: { x: number; y: number } | null = null;
+    let best: Point | null = null;
     let bestDist = 40;
     for (const p of pool) {
       const d = Math.hypot(p.x - (anchor.x + dx), p.y - (anchor.y + dy));
@@ -338,10 +338,13 @@ function locateAnchors(items: readonly PdfTextItem[], anchors: readonly Anchor[]
   return located;
 }
 
-function findLabel(items: readonly PdfTextItem[], label: string): { exact: { x: number; y: number }[]; partial: { x: number; y: number }[] } {
+type Point = { x: number; y: number };
+
+/** Where a label is printed: runs that are exactly the label, else runs or lines that contain it. */
+function findLabel(items: readonly PdfTextItem[], label: string): { exact: Point[]; partial: Point[] } {
   const target = normalize(label);
-  const exact: { x: number; y: number }[] = [];
-  const partial: { x: number; y: number }[] = [];
+  const exact: Point[] = [];
+  const partial: Point[] = [];
   for (const item of items) {
     const n = normalize(item.str);
     if (n === target) exact.push({ x: item.x, y: item.y });
@@ -450,7 +453,7 @@ interface NumberCell {
 function readNumbers(tokens: readonly Token[]): NumberCell {
   const raw = textOf(tokens);
   const cleaned = raw.replace(/\$\s+/g, '$').trim();
-  if (cleaned === '' || /^[-–—]+$/.test(cleaned)) return { values: [], raw, bad: false, slashPair: false };
+  if (cleaned === '' || /^[-\u2013\u2014]+$/.test(cleaned)) return { values: [], raw, bad: false, slashPair: false };
   const slashPair = /\d\s*\/\s*[$\d.]/.test(cleaned);
   const parts = cleaned.split(/\s*\/\s*|\s+/).filter(Boolean);
   const values: number[] = [];
@@ -472,7 +475,7 @@ function readSheet(frame: Frame, pageNumber: number, sheetIndex: number, result:
 
   PAGE1_SLOTS.forEach((slot, slotIndex) => {
     const inSlot = frame.tokens.filter((t) => t.cy >= slot.bottom && t.cy < slot.top);
-    const cells = new Map<Page1Column, { st: Token[]; ot: Token[]; all: Token[] }>();
+    const cells: Cells = new Map();
     let used = 0;
     for (const t of inSlot) {
       const col = columnOf(t);
@@ -480,11 +483,12 @@ function readSheet(frame: Frame, pageNumber: number, sheetIndex: number, result:
       used++;
       let cell = cells.get(col);
       if (!cell) {
-        cell = { st: [], ot: [], all: [] };
+        cell = { st: [], ot: [], all: [], overflow: false };
         cells.set(col, cell);
       }
       cell.all.push(t);
-      (t.cy >= slot.mid ? cell.st : cell.ot).push(t);
+      if (SPLIT_COLUMNS.has(col)) (t.cy >= slot.mid ? cell.st : cell.ot).push(t);
+      if (runsIntoOtherColumn(t, col)) cell.overflow = true;
     }
     if (used === 0) return;
     if (/\bNO\s+WORK\b/i.test(textOf(inSlot))) {
@@ -498,6 +502,13 @@ function readSheet(frame: Frame, pageNumber: number, sheetIndex: number, result:
     });
     result.lines.push(line);
   });
+}
+
+/** A word that reaches well into a neighbouring data column may belong there, or be two values run together. */
+function runsIntoOtherColumn(t: Token, own: Page1Column): boolean {
+  return (Object.entries(PAGE1_COLUMNS) as [Page1Column, Range][]).some(
+    ([key, r]) => key !== own && Math.min(t.x1, r.x1) - Math.max(t.x0, r.x0) > 2,
+  );
 }
 
 /** The data column a word belongs to: the one containing its centre, else the one it overlaps most. */
@@ -589,12 +600,44 @@ function dayDate(text: string, weekEnding: ISODate | null): ISODate | null {
   return best;
 }
 
-type Cells = Map<Page1Column, { st: Token[]; ot: Token[]; all: Token[] }>;
+type Cells = Map<Page1Column, { st: Token[]; ot: Token[]; all: Token[]; overflow: boolean }>;
+
+/** The PayrollLine field each column feeds, for lowConfidence entries. */
+const COLUMN_FIELD: Record<Page1Column, string> = {
+  entryNo: 'entryNo',
+  lastName: 'workerName',
+  firstName: 'workerName',
+  middleInitial: 'workerName',
+  workerId: 'workerId',
+  journeyApprentice: 'apprentice',
+  classification: 'classification',
+  day0: 'dailyST[0]',
+  day1: 'dailyST[1]',
+  day2: 'dailyST[2]',
+  day3: 'dailyST[3]',
+  day4: 'dailyST[4]',
+  day5: 'dailyST[5]',
+  day6: 'dailyST[6]',
+  totalHours: 'totalST',
+  rate: 'rateST',
+  fringePlanHourly: 'fringePlanHourly',
+  fringeCashHourly: 'fringeCashHourly',
+  grossThisProject: 'grossThisProject',
+  grossAllWork: 'grossAllWork',
+  taxWithholdings: 'deductionDetail.taxWithholdings',
+  fica: 'deductionDetail.fica',
+  otherDeductions: 'deductionDetail.other',
+  deductions: 'deductions',
+  netPay: 'netPay',
+};
 
 function readWorker(cells: Cells, result: Wh347ParseResult, source: Wh347Line['source']): Wh347Line {
   const row = result.lines.length;
   const flag = (field: string, reason: string) => result.lowConfidence.push({ row, field, reason });
   const text = (col: Page1Column) => textOf(cells.get(col)?.all ?? []);
+  for (const [col, cell] of cells) {
+    if (cell.overflow) flag(COLUMN_FIELD[col], `"${textOf(cell.all)}" runs into the next column; check it against the PDF.`);
+  }
 
   const single = (col: Page1Column, field: string): number | null => {
     const cell = readNumbers(cells.get(col)?.all ?? []);
@@ -634,9 +677,8 @@ function readWorker(cells: Cells, result: Wh347ParseResult, source: Wh347Line['s
   else if (/^(J|JW|JM|JOURNEYWORKER|JOURNEYMAN|JOURNEYPERSON)$/.test(ja)) apprentice = false;
   else if (ja === '') {
     apprentice = /apprentice/i.test(classification);
-    flag('apprentice', apprentice
-      ? 'Column (2) is blank; treated as an apprentice because the classification says so.'
-      : 'Column (2) is blank; treated as a journeyworker.');
+    const treatedAs = apprentice ? 'an apprentice because the classification says so' : 'a journeyworker';
+    flag('apprentice', `Column (2) is blank; treated as ${treatedAs}.`);
   } else {
     flag('apprentice', `Column (2) shows "${text('journeyApprentice')}"; treated as a journeyworker.`);
   }
@@ -727,7 +769,7 @@ interface StatementPage extends Wh347Statement {
   projectLocation: string | null;
 }
 
-const PLACEHOLDER = /^[\s_()\-–—]*$/;
+const PLACEHOLDER = /^[\s_()\-\u2013\u2014]*$/;
 
 function readStatement(frame: Frame): StatementPage {
   const header = (field: keyof typeof PAGE2_HEADER) => boxText(frame, PAGE2_HEADER[field]);

@@ -10,7 +10,9 @@ import type {
   StoredWageDetermination,
 } from '../engine/types';
 import { parseWageDetermination } from '../engine/wd/parse';
+import { formatDate } from '../engine/dates';
 import { normalizeLabel } from '../engine/mapping';
+import type { ColumnMap } from '../engine/importers/columns';
 
 export interface ProjectData {
   project: Project;
@@ -171,7 +173,15 @@ export async function saveContractor(c: Contractor): Promise<void> {
 
 export async function deleteContractor(c: Contractor): Promise<void> {
   const d = db();
-  await d.transaction('rw', [d.contractors, d.payrolls, d.mappings, d.importProfiles, d.projects, d.activity], async () => {
+  await d.transaction('rw', [d.contractors, d.payrolls, d.mappings, d.importProfiles, d.restitution, d.dispositions, d.files, d.projects, d.activity], async () => {
+    const payrolls = await d.payrolls.where('contractorId').equals(c.id).toArray();
+    // Finding keys embed the payroll id (line findings) or the contractor id (week findings).
+    const ids = [c.id, ...payrolls.map((p) => p.id)];
+    const owned = (key: string) => ids.some((id) => key.split(':').includes(id));
+    await d.restitution.where('projectId').equals(c.projectId).filter((r) => owned(r.findingKey)).delete();
+    await d.dispositions.where('projectId').equals(c.projectId).filter((r) => owned(r.findingKey)).delete();
+    const fileIds = payrolls.map((p) => p.source.fileId).filter((id): id is string => Boolean(id));
+    if (fileIds.length) await d.files.bulkDelete(fileIds);
     await d.contractors.delete(c.id);
     await d.payrolls.where('contractorId').equals(c.id).delete();
     await d.mappings.where('contractorId').equals(c.id).delete();
@@ -207,7 +217,7 @@ export async function savePayroll(payroll: Payroll, file?: { name: string; type:
       await logActivity(
         payroll.projectId,
         'Payroll added',
-        `Payroll ${toSave.payrollNumber || '(no number)'} week ending ${toSave.weekEnding}${file ? ` from ${file.name}` : ''}`,
+        `Payroll ${toSave.payrollNumber || '(no number)'}, week ending ${formatDate(toSave.weekEnding)}${file ? `, from ${file.name}` : ''}`,
       );
     }
   });
@@ -220,7 +230,7 @@ export async function setPayrollStatus(payroll: Payroll, status: Payroll['status
   if (note !== undefined) patch.reviewNote = note;
   await db().payrolls.update(payroll.id, patch);
   await touch(payroll.projectId);
-  await logActivity(payroll.projectId, `Payroll marked ${status.replace('-', ' ')}`, `Payroll ${payroll.payrollNumber || '(no number)'} week ending ${payroll.weekEnding}`);
+  await logActivity(payroll.projectId, `Payroll marked ${status.replace('-', ' ')}`, `Payroll ${payroll.payrollNumber || '(no number)'}, week ending ${formatDate(payroll.weekEnding)}`);
 }
 
 export async function deletePayroll(payroll: Payroll): Promise<void> {
@@ -232,7 +242,7 @@ export async function deletePayroll(payroll: Payroll): Promise<void> {
       if (stillUsed === 0) await d.files.delete(payroll.source.fileId);
     }
     await touch(payroll.projectId);
-    await logActivity(payroll.projectId, 'Payroll deleted', `Payroll ${payroll.payrollNumber || '(no number)'} week ending ${payroll.weekEnding}`);
+    await logActivity(payroll.projectId, 'Payroll deleted', `Payroll ${payroll.payrollNumber || '(no number)'}, week ending ${formatDate(payroll.weekEnding)}`);
   });
 }
 
@@ -269,7 +279,7 @@ export async function setDisposition(projectId: string, findingKey: string, dism
   await touch(projectId);
 }
 
-export async function saveImportProfile(projectId: string, contractorId: string, headerSignature: string, columnMap: Record<string, number>): Promise<void> {
+export async function saveImportProfile(projectId: string, contractorId: string, headerSignature: string, columnMap: ColumnMap): Promise<void> {
   const d = db();
   const existing = await d.importProfiles.where('[contractorId+headerSignature]').equals([contractorId, headerSignature]).first();
   await d.importProfiles.put({ id: existing?.id ?? newId(), projectId, contractorId, headerSignature, columnMap, updatedAt: nowIso() });

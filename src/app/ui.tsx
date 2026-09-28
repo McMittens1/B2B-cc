@@ -200,13 +200,14 @@ export function Spinner({ label = 'Loading…' }: { label?: string }) {
   );
 }
 
+/** A labelled form control. Wrapping the control in the <label> ties the two together for assistive tech. */
 export function Field({ label, hint, error, children, className = '' }: { label: string; hint?: ReactNode; error?: string | null; children: ReactNode; className?: string }) {
   return (
-    <div className={`field ${className}`}>
-      <label>{label}</label>
+    <label className={`field ${className}`}>
+      <span className="label">{label}</span>
       {children}
-      {error ? <div className="error">{error}</div> : hint ? <div className="hint">{hint}</div> : null}
-    </div>
+      {error ? <span className="error" role="alert">{error}</span> : hint ? <span className="hint">{hint}</span> : null}
+    </label>
   );
 }
 

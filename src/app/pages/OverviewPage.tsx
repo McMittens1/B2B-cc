@@ -112,7 +112,14 @@ export function OverviewPage({ view }: { view: ProjectView }) {
             {formatMoney(ledger.totals.owed)} found · {ledger.rows.length} line items
           </div>
         </a>
-        <a className="kpi" href="#matrix">
+        <a
+          className="kpi"
+          href="#"
+          onClick={(e) => {
+            e.preventDefault();
+            document.getElementById('matrix')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        >
           <div className="label">Missing weekly payrolls</div>
           <div className={`value ${missing.length ? 'bad' : ''}`}>{missing.length}</div>
           <div className="sub">

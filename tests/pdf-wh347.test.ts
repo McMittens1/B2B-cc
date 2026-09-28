@@ -4,11 +4,19 @@ import { PDFDocument, StandardFonts, degrees } from 'pdf-lib';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { extractPdfText } from '../src/engine/pdf/extract';
 import { importPayrollPdf } from '../src/engine/pdf/index';
-import { defaultDays, fillWh347, formatAmountPlain, formatHoursPlain } from '../src/engine/pdf/wh347-fill';
+import {
+  defaultDays,
+  fillWh347,
+  formatAmountPlain,
+  formatHoursPlain,
+  splitWorkerName,
+  wh347FromPayroll,
+} from '../src/engine/pdf/wh347-fill';
 import type { Wh347FillData, Wh347FillWorker } from '../src/engine/pdf/wh347-fill';
 import { parseWh347, type Wh347Line } from '../src/engine/pdf/wh347-parse';
 import { PAGE1_COLUMNS, PAGE1_SLOTS } from '../src/engine/pdf/wh347-layout';
 import { cents, extend, sum } from '../src/engine/money';
+import type { Payroll, PayrollLine } from '../src/engine/types';
 
 const template = new Uint8Array(fs.readFileSync('public/forms/wh347-rev2025.pdf'));
 const opts = { pdfjs };
@@ -561,6 +569,119 @@ describe('parseWh347 on payrolls printed by other software', () => {
     expect(result.lowConfidence.find((f) => f.row === 0 && f.field === 'rateST' && /not a number/.test(f.reason))).toBeTruthy();
   });
 
+  it('skips blank rows between workers', async () => {
+    const second: Cell[] = [
+      { col: 'entryNo', text: '2', row: 'full' },
+      { col: 'lastName', text: 'Ruiz', row: 'full' },
+      { col: 'firstName', text: 'Tomasa', row: 'full' },
+      { col: 'journeyApprentice', text: 'RA', row: 'full' },
+      { col: 'classification', text: 'Laborer', row: 'full' },
+      { col: 'day1', text: '6', row: 'st' },
+      { col: 'totalHours', text: '6', row: 'st' },
+      { col: 'rate', text: '16.11', row: 'st' },
+    ];
+    const pdf = await drawOnForm([[...baseCells, { col: 'totalHours', text: '40', row: 'st' }, { col: 'rate', text: '26.85', row: 'st' }], [], [], second]);
+    const result = await importPayrollPdf(pdf, opts);
+    expect(result.lines.map((l) => [l.source.slot, l.workerName, l.apprentice, l.totalST])).toEqual([
+      [1, 'Varga, Nell', false, 40],
+      [4, 'Ruiz, Tomasa', true, 6],
+    ]);
+    expect(result.lowConfidence).toEqual([]);
+  });
+
+  it('flags text that runs into the next column', async () => {
+    const pdf = await drawOnForm(
+      [baseCells.filter((c) => c.col !== 'lastName' && c.col !== 'firstName')],
+      (page, font) => {
+        const slot = PAGE1_SLOTS[0]!;
+        page.drawText('Vanderhoeven-Castellanos Nell', { x: 67, y: (slot.top + slot.bottom) / 2 - 2, size: 7, font });
+      },
+    );
+    const result = await importPayrollPdf(pdf, opts);
+    expect(result.lines).toHaveLength(1);
+    expect(result.lowConfidence.some((f) => f.row === 0 && f.field === 'workerName' && /runs into the next column/.test(f.reason))).toBe(true);
+  });
+
+  it('splits one text run that covers several day columns', async () => {
+    const { pages } = await extractPdfText(template, opts);
+    const sheet = pages[0]!;
+    const slot = PAGE1_SLOTS[0]!;
+    const stY = (slot.mid + slot.top) / 2 - 2;
+    const run = (str: string, x: number, charW = 3.075) => ({
+      str,
+      x,
+      y: stY,
+      w: str.length * charW,
+      h: 6,
+      fontSize: 6,
+      angle: 0,
+      fontName: 'f9',
+      monospace: false,
+    });
+    const day1Center = (PAGE1_COLUMNS.day1.x0 + PAGE1_COLUMNS.day1.x1) / 2;
+    sheet.items.push(
+      run('Ostrowski', 70),
+      run('Laborer', 258),
+      run('8   8   8   8   8', day1Center - 3.075 / 2),
+      run('40', 440),
+      run('26.85', 474),
+    );
+    const result = parseWh347([sheet]);
+    expect(result.lines).toHaveLength(1);
+    expect(result.lines[0]!.dailyST).toEqual([0, 8, 8, 8, 8, 8, 0]);
+    expect(result.lines[0]!.totalST).toBe(40);
+    expect(result.lines[0]!.rateST).toBe(26.85);
+  });
+
+  it('reads values typed into fillable form fields that were never flattened', async () => {
+    const doc = await PDFDocument.load(template);
+    const form = doc.getForm();
+    const [sheet, statement] = doc.getPages();
+    let n = 0;
+    const field = (page: typeof sheet, value: string, box: { x0: number; x1: number; y0: number; y1: number }) => {
+      const f = form.createTextField(`f${++n}`);
+      if (value.includes('\n')) f.enableMultiline();
+      f.setText(value);
+      f.addToPage(page!, { x: box.x0 + 0.5, y: box.y0 + 0.5, width: box.x1 - box.x0 - 1, height: box.y1 - box.y0 - 1, borderWidth: 0 });
+      f.setFontSize(value.includes('\n') ? 0 : 7);
+    };
+    const slot = PAGE1_SLOTS[0]!;
+    const full = (col: keyof typeof PAGE1_COLUMNS) => ({ ...PAGE1_COLUMNS[col], y0: slot.bottom, y1: slot.top });
+    const st = (col: keyof typeof PAGE1_COLUMNS) => ({ ...PAGE1_COLUMNS[col], y0: slot.mid, y1: slot.top });
+    field(sheet, 'Harlow Creek Water Main', { x0: 41.8, x1: 194.9, y0: 460.7, y1: 479.2 });
+    field(sheet, '07/11/2026', { x0: 342.1, x1: 438.8, y0: 428.4, y1: 447.7 });
+    field(sheet, 'Varga', full('lastName'));
+    field(sheet, 'Nell', full('firstName'));
+    field(sheet, 'J', full('journeyApprentice'));
+    field(sheet, 'Laborer\nGroup 1', full('classification'));
+    for (const col of ['day1', 'day2', 'day3', 'day4', 'day5'] as const) field(sheet, '8', st(col));
+    field(sheet, '40', st('totalHours'));
+    field(sheet, '26.85', st('rate'));
+    field(sheet, '12.40', full('fringePlanHourly'));
+    const final = form.createCheckBox('final');
+    final.addToPage(sheet!, { x: 41, y: 502.5, width: 8, height: 8 });
+    final.check();
+    const unticked = form.createCheckBox('prime');
+    unticked.addToPage(sheet!, { x: 432.6, y: 502.5, width: 8, height: 8 });
+    field(statement, 'Marisol Quenneville', { x0: 32.2, x1: 377.3, y0: 54.6, y1: 71.5 });
+
+    const result = await importPayrollPdf(await doc.save(), opts);
+    expect(result.recognized).toBe(true);
+    expect(result.meta.projectName).toBe('Harlow Creek Water Main');
+    expect(result.meta.weekEnding).toBe('2026-07-11');
+    expect(result.meta.isFinal).toBe(true);
+    expect(result.meta.contractorRole).toBeNull();
+    expect(result.meta.signed).toBe(true);
+    expect(result.lines).toHaveLength(1);
+    const line = result.lines[0]!;
+    expect(line.workerName).toBe('Varga, Nell');
+    expect(line.classification).toBe('Laborer Group 1');
+    expect(line.dailyST).toEqual([0, 8, 8, 8, 8, 8, 0]);
+    expect(line.totalST).toBe(40);
+    expect(line.rateST).toBe(26.85);
+    expect(line.fringePlanHourly).toBe(12.4);
+  });
+
   it('recognizes a "no work performed" payroll', async () => {
     const pdf = await drawOnForm([], (page, font) => {
       page.drawText('*** NO WORK PERFORMED THIS WEEK ***', { x: 120, y: 312, size: 9, font });
@@ -634,7 +755,7 @@ describe('parseWh347 on payrolls printed by other software', () => {
   });
 
   it('points out the pre-2025 WH-347', () => {
-    const item = (str: string, y: number) => ({ str, x: 40, y, w: str.length * 4, h: 8, fontSize: 8, angle: 0 });
+    const item = (str: string, y: number) => ({ str, x: 40, y, w: str.length * 4, h: 8, fontSize: 8, angle: 0, fontName: 'f1', monospace: false });
     const result = parseWh347([
       { width: 792, height: 612, items: [item('PAYROLL', 560), item('NO. OF WITHHOLDING EXEMPTIONS', 500)] },
     ]);
@@ -660,6 +781,108 @@ describe('parseWh347 on payrolls printed by other software', () => {
   });
 });
 
+describe('wh347FromPayroll', () => {
+  const line = (p: Partial<PayrollLine>): PayrollLine => ({
+    id: 'x',
+    workerName: 'Worker, Pat',
+    workerId: '1234',
+    classification: 'Laborer Group 1',
+    apprentice: false,
+    dailyST: [0, 8, 8, 8, 8, 8, 0],
+    dailyOT: [0, 0, 0, 0, 0, 0, 0],
+    totalST: 40,
+    totalOT: 0,
+    rateST: 26.85,
+    rateOT: null,
+    fringePlanHourly: 12.4,
+    fringeCashHourly: 0,
+    grossThisProject: 1074,
+    grossAllWork: 1074,
+    deductions: 200.3,
+    netPay: 873.7,
+    ...p,
+  });
+
+  it('turns a stored payroll into the PDF a contractor would send, and reads it back unchanged', async () => {
+    const payroll: Pick<Payroll, 'payrollNumber' | 'weekEnding' | 'isFinal' | 'statementOfComplianceSigned' | 'lines'> = {
+      payrollNumber: '3',
+      weekEnding: '2026-06-13',
+      isFinal: false,
+      statementOfComplianceSigned: true,
+      lines: [
+        line({ id: 'a', workerName: 'Pemberton-Oduya, Selah R' }),
+        line({
+          id: 'b',
+          workerName: 'Thibodeaux, Marcel',
+          workerId: '0042',
+          classification: 'Power Equipment Operator Group 3',
+          dailyOT: [0, 0, 0, 0, 0, 2, 0],
+          totalOT: 2,
+          rateST: 36.9,
+          rateOT: 55.35,
+          fringePlanHourly: 0,
+          fringeCashHourly: 25.1,
+          grossThisProject: 2638.9,
+          grossAllWork: 2900.15,
+          deductions: null,
+          netPay: null,
+        }),
+        line({ id: 'c', workerName: 'Quist, Ada', apprentice: true, rateST: 16.11, fringePlanHourly: 7.44, grossThisProject: null }),
+      ],
+    };
+    const data = wh347FromPayroll({
+      project: { name: 'Harlow Creek Water Main Replacement', projectNumber: 'B-26-DC-00-0001', location: 'Harlow' },
+      contractor: {
+        name: 'Birchline Utility Contractors, LLC',
+        address: '1400 Quarry Road, Harlow, SS 45000',
+        tier: 'prime',
+        apprenticePrograms: [
+          {
+            id: 'p1',
+            name: 'Sample State Laborers JATC',
+            registeredWith: 'OA',
+            classification: 'Laborer',
+            wagePercent: 60,
+            fringePercent: null,
+            maxApprenticesPerJourneyworker: 1,
+          },
+        ],
+      },
+      payroll,
+      wdNumber: 'XX20260047',
+      certifyingOfficial: official,
+    });
+    expect(data.contractorRole).toBe('prime');
+    expect(data.workers.map((w) => [w.entryNo, w.lastName, w.firstName, w.middleInitial])).toEqual([
+      ['1', 'Pemberton-Oduya', 'Selah', 'R'],
+      ['2', 'Thibodeaux', 'Marcel', ''],
+      ['3', 'Quist', 'Ada', ''],
+    ]);
+
+    const result = await roundTrip(data);
+    expect(result.lowConfidence).toEqual([]);
+    expect(result.meta.signed).toBe(true);
+    expect(result.statement!.apprenticePrograms).toEqual([
+      { name: 'Sample State Laborers JATC', registeredWith: 'OA', classification: 'Laborer' },
+    ]);
+    const asStored = result.lines.map(
+      ({ entryNo: _e, lastName: _l, firstName: _f, middleInitial: _m, deductionDetail: _d, source: _s, ...rest }) => rest,
+    );
+    expect(asStored).toEqual(payroll.lines.map(({ id: _id, ...rest }) => rest));
+  });
+
+  it.each([
+    ['Okafor, Renata J', { last: 'Okafor', first: 'Renata', middleInitial: 'J' }],
+    ['Okafor, Renata J.', { last: 'Okafor', first: 'Renata', middleInitial: 'J.' }],
+    ['De La Cruz, Maria Elena', { last: 'De La Cruz', first: 'Maria Elena', middleInitial: '' }],
+    ['Renata J Okafor', { last: 'Okafor', first: 'Renata', middleInitial: 'J' }],
+    ['Renata Okafor', { last: 'Okafor', first: 'Renata', middleInitial: '' }],
+    ['Maria De La Cruz', { last: 'De La Cruz', first: 'Maria', middleInitial: '' }],
+    ['Cher', { last: 'Cher', first: '', middleInitial: '' }],
+    ['  ', { last: '', first: '', middleInitial: '' }],
+  ])('splits "%s"', (name, expected) => expect(splitWorkerName(name)).toEqual(expected));
+});
+
 describe('number formatting used on the form', () => {
   it.each([
     [8, '8'],
@@ -676,11 +899,6 @@ describe('number formatting used on the form', () => {
     [0, '0.00'],
     [-12.3, '-12.30'],
   ])('amount %s → %s', (v, s) => expect(formatAmountPlain(v)).toBe(s));
-});
-
-it.runIf(process.env.WH347_DUMP)('dumps samples', async () => {
-  fs.writeFileSync(`${process.env.WH347_DUMP}/a.pdf`, await fillWh347(template, payrollA()));
-  fs.writeFileSync(`${process.env.WH347_DUMP}/b.pdf`, await fillWh347(template, payrollB()));
 });
 
 describe('extractPdfText on the filled form', () => {

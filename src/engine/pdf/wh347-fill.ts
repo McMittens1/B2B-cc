@@ -1,6 +1,6 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import { addDays, formatDate, isIsoDate, weekday } from '../dates';
-import type { ISODate } from '../types';
+import type { Contractor, ISODate, Payroll, Project } from '../types';
 import {
   APPRENTICE_ROWS,
   CHECKBOX_CENTER_RISE,
@@ -179,6 +179,91 @@ function validate(data: Wh347FillData): void {
   }
 }
 
+export interface Wh347FromPayrollInput {
+  project: Pick<Project, 'name' | 'projectNumber' | 'location'>;
+  contractor: Pick<Contractor, 'name' | 'address' | 'tier' | 'apprenticePrograms'>;
+  payroll: Pick<Payroll, 'payrollNumber' | 'weekEnding' | 'isFinal' | 'statementOfComplianceSigned' | 'lines'>;
+  wdNumber: string;
+  certifyingOfficial: Wh347FillData['certifyingOfficial'];
+  fringePlans?: readonly Wh347FringePlan[];
+  remarks?: string;
+}
+
+/**
+ * Lay out a stored payroll as WH-347 fill data, so demonstration payrolls can
+ * be handed out as the PDF a contractor would send. Worker names are split
+ * into last, first and middle initial the way the form asks for them.
+ */
+export function wh347FromPayroll(input: Wh347FromPayrollInput): Wh347FillData {
+  const { project, contractor, payroll } = input;
+  const seven = (values: readonly number[]) => Array.from({ length: 7 }, (_, i) => values[i] ?? 0);
+  return {
+    projectName: project.name,
+    projectNumber: project.projectNumber,
+    projectLocation: project.location,
+    wdNumber: input.wdNumber,
+    payrollNumber: payroll.payrollNumber,
+    weekEnding: payroll.weekEnding,
+    businessName: contractor.name,
+    businessAddress: contractor.address,
+    contractorRole: contractor.tier === 'prime' ? 'prime' : 'subcontractor',
+    isFinal: payroll.isFinal,
+    certifyingOfficial: input.certifyingOfficial,
+    signed: payroll.statementOfComplianceSigned,
+    apprenticePrograms: contractor.apprenticePrograms.map((p) => ({
+      name: p.name,
+      registeredWith: p.registeredWith,
+      classification: p.classification,
+    })),
+    ...(input.fringePlans ? { fringePlans: input.fringePlans } : {}),
+    ...(input.remarks ? { remarks: input.remarks } : {}),
+    workers: payroll.lines.map((line, i) => {
+      const name = splitWorkerName(line.workerName);
+      return {
+        entryNo: String(i + 1),
+        lastName: name.last,
+        firstName: name.first,
+        middleInitial: name.middleInitial,
+        identifyingNumber: line.workerId,
+        apprentice: line.apprentice,
+        classification: line.classification,
+        dailyST: seven(line.dailyST),
+        dailyOT: seven(line.dailyOT),
+        totalST: line.totalST,
+        totalOT: line.totalOT,
+        rateST: line.rateST,
+        rateOT: line.rateOT,
+        fringePlanHourly: line.fringePlanHourly,
+        fringeCashHourly: line.fringeCashHourly,
+        grossThisProject: line.grossThisProject,
+        grossAllWork: line.grossAllWork,
+        deductions: line.deductions,
+        netPay: line.netPay,
+      };
+    }),
+  };
+}
+
+/** "Okafor, Renata J" or "Renata J Okafor" → last, first, middle initial. */
+export function splitWorkerName(name: string): { last: string; first: string; middleInitial: string } {
+  const clean = name.replace(/\s+/g, ' ').trim();
+  const initial = (t: string | undefined) => (t && /^[A-Za-z]\.?$/.test(t) ? t : '');
+  const comma = /^([^,]+),\s*(.*)$/.exec(clean);
+  if (comma) {
+    const rest = comma[2]!.split(' ').filter(Boolean);
+    const mi = rest.length > 1 ? initial(rest[rest.length - 1]) : '';
+    return { last: comma[1]!.trim(), first: (mi ? rest.slice(0, -1) : rest).join(' '), middleInitial: mi };
+  }
+  const tokens = clean.split(' ').filter(Boolean);
+  if (tokens.length <= 1) return { last: tokens[0] ?? '', first: '', middleInitial: '' };
+  const mi = tokens.length > 2 ? initial(tokens[1]) : '';
+  return {
+    first: tokens[0]!,
+    middleInitial: mi,
+    last: tokens.slice(mi ? 2 : 1).join(' '),
+  };
+}
+
 /** The seven days ending on the week-ending date, as printed at the top of column (4). */
 export function defaultDays(weekEnding: ISODate): Wh347Day[] {
   return Array.from({ length: 7 }, (_, i) => {
@@ -221,8 +306,8 @@ function drawSheet(
     const day = days[i];
     if (!day) return;
     const range = PAGE1_COLUMNS[col];
-    drawInBox(page, day.name, { ...range, ...DAY_HEADER_ROWS.names }, { font: fonts.regular, size: nameSize, minSize: 3.5 });
-    drawInBox(page, shortDate(day.date), { ...range, ...DAY_HEADER_ROWS.dates }, { font: fonts.regular, size: dateSize, minSize: 3.5 });
+    drawInBox(page, day.name, { ...range, ...DAY_HEADER_ROWS.names }, { font: fonts.regular, size: nameSize });
+    drawInBox(page, shortDate(day.date), { ...range, ...DAY_HEADER_ROWS.dates }, { font: fonts.regular, size: dateSize });
   });
 
   workers.forEach((w, i) => drawWorker(page, fonts.regular, w, PAGE1_SLOTS[i]!));
@@ -378,14 +463,16 @@ function drawStatement(
       });
       const credits = w.fringeCredits ?? (plans.length === 1 ? [w.fringePlanHourly] : []);
       credits.slice(0, FRINGE_PLAN_COUNT).forEach((credit, i) => {
-        if (credit !== null && credit !== undefined) drawInBox(page, formatAmountPlain(credit), at(FRINGE_PLAN_COLUMNS[i]!.credit), num);
+        if (credit === null || credit === undefined) return;
+        drawInBox(page, formatAmountPlain(credit), at(FRINGE_PLAN_COLUMNS[i]!.credit), num);
       });
       drawInBox(page, formatAmountPlain(w.fringePlanHourly), at(FRINGE_TOTAL_CREDIT), num);
     });
   }
 
   if (remarks.length > 0) {
-    drawInBox(page, remarks.join(' '), PAGE2_REMARKS, { font: fonts.regular, size: 7.5, minSize: 5, maxLines: 3, align: 'left', pad: 3.5 });
+    const style: TextStyle = { font: fonts.regular, size: 7.5, minSize: 5, maxLines: 3, align: 'left', pad: 3.5 };
+    drawInBox(page, remarks.join(' '), PAGE2_REMARKS, style);
   }
 }
 
@@ -492,7 +579,7 @@ function encodable(font: PDFFont, text: string): string {
     if (supported.has(code)) out += ch;
     else if (/\s/.test(ch)) out += ' ';
     else {
-      const base = ch.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      const base = ch.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
       out += base && [...base].every((c) => supported.has(c.codePointAt(0)!)) ? base : '?';
     }
   }

@@ -250,9 +250,9 @@ const SPECS: FieldSpec[] = [
       'journeyworker j or apprentice a', 'journeyman j or apprentice a', 'j or a', 'apprentice', 'apprentice yn',
       'apprentice status', 'apprentice flag', 'is apprentice', 'apprentice level', 'apprentice period',
       'apprentice pct', 'apprentice percent', 'appr level', 'skill level', 'journey level', 'jw or app',
-      'status j a', 'j a status',
+      'status j a', 'j a status', 'ja',
     ],
-    exact: ['ja', 'app', 'appr', 'level', 'j a'],
+    exact: ['app', 'appr', 'level'],
     not: ['rate', 'hours', 'program', 'registration', 'ratio', 'number', 'no', 'wage', 'id'],
   },
   {
@@ -585,8 +585,17 @@ export interface HeaderCell {
   parts: unknown[];
 }
 
+/**
+ * Header text of one cell. Date headers typed with a custom format ("ddd m/d") come
+ * back from XLSX as serial numbers; a five-digit number in a header is shown as its date.
+ */
+export function headerText(value: unknown): string {
+  if (typeof value === 'number' && value > 20000 && value < 80000) return parseDateLoose(value) ?? cellText(value);
+  return cellText(value);
+}
+
 export function headerCellsFromRow(row: readonly unknown[]): HeaderCell[] {
-  return Array.from(row, (v) => ({ text: cellText(v), parts: cellText(v) ? [v] : [] }));
+  return Array.from(row, (v) => ({ text: headerText(v), parts: headerText(v) ? [v] : [] }));
 }
 
 /**
@@ -601,12 +610,12 @@ export function combineHeaderRows(top: readonly unknown[], sub: readonly unknown
   for (let c = 0; c < width; c++) {
     const t = top[c];
     const s = sub[c];
-    const hasT = cellText(t) !== '';
-    const hasS = cellText(s) !== '';
+    const hasT = headerText(t) !== '';
+    const hasS = headerText(s) !== '';
     if (hasT) carry = hasS ? t : null;
     else if (!hasS) carry = null;
     const parts = hasT ? (hasS ? [t, s] : [t]) : hasS ? (carry !== null ? [carry, s] : [s]) : [];
-    cells.push({ text: parts.map(cellText).join(' '), parts });
+    cells.push({ text: parts.map(headerText).join(' '), parts });
   }
   return cells;
 }
@@ -620,6 +629,8 @@ export interface DayColumns {
   labels: string[];
   /** Calendar date of each day when the headers carry full dates. */
   dates: (ISODate | null)[];
+  /** Month and day when a header shows a date without the year ("Mon 6/8"). */
+  monthDays: ({ month: number; day: number } | null)[];
 }
 
 type Qualifier = 'st' | 'ot' | null;
@@ -694,7 +705,7 @@ function classifyDayHeader(cell: HeaderCell, col: number): DayHeader | null {
   const dom = n !== null && n >= 1 && n <= 31 ? n : null;
   if (n !== null && dom === null) return null;
   if (!dows && !date && index === null && dom === null) return null;
-  return { col, qualifier, dows, date, index, dom, label: cell.text };
+  return { col, qualifier, dows, date, index, dom, label: headerText(cell.parts[cell.parts.length - 1]) };
 }
 
 function isDaySequence(run: readonly DayHeader[]): boolean {
@@ -813,7 +824,16 @@ export function detectHeaderCells(cells: readonly HeaderCell[]): ColumnDetection
     notes.push('More than seven days of daily hours were found; only the first week was mapped. Certified payrolls cover one workweek each.');
   }
   const primary = plain[0] ?? st[0] ?? ot[0] ?? null;
-  const days: DayColumns | null = primary ? { labels: primary.map((h) => h.label), dates: primary.map(isoOf) } : null;
+  if (!primary && dayHeaders.filter((h) => h.date || (h.dows && h.dows.length === 1)).length >= 5) {
+    notes.push('Daily hours columns were found, but not seven consecutive days; daily hours were not imported, only the weekly totals.');
+  }
+  const days: DayColumns | null = primary
+    ? {
+        labels: primary.map((h) => h.label),
+        dates: primary.map(isoOf),
+        monthDays: primary.map((h) => (h.date ? { month: h.date.m, day: h.date.d } : null)),
+      }
+    : null;
 
   // Everything else: best-scoring (field, column) pairs first.
   const headerWords = cells.map((c) => words(c.parts.map((p) => normalizeHeaderText(p)).join(' ')));

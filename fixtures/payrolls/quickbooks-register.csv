@@ -1,0 +1,9 @@
+Ridgeline Concrete LLC
+Payroll Register
+"June 7 - 13, 2026"
+
+Employee,SSN (last 4),Work Class,Regular Hours,Overtime Hours,Reg Rate,OT Rate,Gross Pay,Fed W/H,Social Security,Medicare,State W/H,Total Deductions,Net Pay
+"Alvarez, Marco T",4821,Cement Mason,40,4,31.25,46.88,"1,437.52",142.00,89.13,20.84,52.10,304.07,"1,133.45"
+"Brennan, Sofia",0317,Laborer Group 1,38.5,0,26.85,,"1,033.73",88.00,64.09,14.99,35.40,202.48,831.25
+"Okafor, Daniel",7755,Cement Mason Apprentice,40,2,18.75,28.13,806.26,51.00,49.99,11.69,24.10,136.78,669.48
+Total,,,118.5,6,,,"3,277.51",281.00,203.21,47.52,111.60,643.33,"2,634.18"

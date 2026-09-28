@@ -227,7 +227,7 @@ export function buildScenario(today: ISODate): DemoScenario {
     });
   }
 
-  // Paving sub: weeks 6..9 as spreadsheets. Week 7 received late and shows a full SSN;
+  // Paving sub: weeks 6..9 as spreadsheets. Week 7 arrived 16 days after the week ended and shows a full SSN;
   // "Welder" is not on the WD; job titles need matching.
   for (let i = 6; i < 10; i++) {
     const driver = i === 7 ? { ...paving.driver, id: '512-44-3399' } : paving.driver;
@@ -235,7 +235,7 @@ export function buildScenario(today: ISODate): DemoScenario {
       contractorKey: 'paving',
       payrollNumber: String(i - 5),
       weekEnding: w(i),
-      receivedDate: addDays(w(i), i === 7 ? 19 : 5),
+      receivedDate: addDays(w(i), i === 7 ? 16 : 5),
       signed: true,
       lines: [
         line(paving.backhoe),

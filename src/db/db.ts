@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie';
+import type { ColumnMap } from '../engine/importers/columns';
 import type {
   ClassificationMapping,
   Contractor,
@@ -26,7 +27,7 @@ export interface ImportProfile {
   projectId: string;
   contractorId: string;
   headerSignature: string;
-  columnMap: Record<string, number>;
+  columnMap: ColumnMap;
   updatedAt: string;
 }
 

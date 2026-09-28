@@ -5,7 +5,9 @@
  * the loader is configured defensively: no eval, no font-face injection, no
  * XFA, and a cap on the number of pages read. Coordinates are normalized to
  * PDF points with the origin at the bottom-left of the page as displayed, so
- * pages carrying a /Rotate entry read the same as unrotated ones.
+ * pages carrying a /Rotate entry read the same as unrotated ones. Values typed
+ * into fillable form fields that were never flattened are read too, since they
+ * are not part of the page's own text.
  */
 
 export interface PdfTextItem {
@@ -20,6 +22,12 @@ export interface PdfTextItem {
   fontSize: number;
   /** Text direction in degrees counter-clockwise (0 = normal horizontal text). */
   angle: number;
+  /** pdf.js font id; runs set in the same font share it. */
+  fontName: string;
+  /** The font is fixed-pitch (Courier and the like). */
+  monospace: boolean;
+  /** The value of a fillable form field rather than page text. */
+  formField?: boolean;
 }
 
 export interface PdfTextPage {
@@ -58,7 +66,6 @@ export interface PdfjsDocumentParams {
   useSystemFonts: boolean;
   stopAtErrors: boolean;
   verbosity: number;
-  password?: string;
 }
 
 export interface PdfjsViewportLike {
@@ -69,7 +76,8 @@ export interface PdfjsViewportLike {
 
 export interface PdfjsPageLike {
   getViewport(params: { scale: number }): PdfjsViewportLike;
-  getTextContent(): Promise<{ items: readonly unknown[] }>;
+  getTextContent(): Promise<{ items: readonly unknown[]; styles?: Record<string, { fontFamily?: string }> }>;
+  getAnnotations?(params?: { intent?: string }): Promise<unknown[]>;
   cleanup(): unknown;
 }
 
@@ -187,6 +195,7 @@ interface RawTextItem {
   transform: number[];
   width: number;
   height: number;
+  fontName?: string;
 }
 
 function isRawTextItem(item: unknown): item is RawTextItem {
@@ -199,6 +208,7 @@ async function readPage(page: PdfjsPageLike): Promise<PdfTextPage> {
   const viewport = page.getViewport({ scale: 1 });
   const [va = 1, vb = 0, vc = 0, vd = -1, ve = 0, vf = viewport.height] = viewport.transform;
   const content = await page.getTextContent();
+  const styles = content.styles ?? {};
   const items: PdfTextItem[] = [];
   for (const raw of content.items) {
     if (!isRawTextItem(raw) || raw.str === '') continue;
@@ -209,6 +219,7 @@ async function readPage(page: PdfjsPageLike): Promise<PdfTextPage> {
     const dx = va * a + vc * b;
     const dy = vb * a + vd * b;
     const fontSize = Math.hypot(c, d) || Math.abs(raw.height) || 0;
+    const fontName = typeof raw.fontName === 'string' ? raw.fontName : '';
     items.push({
       str: raw.str,
       x: round2(vx),
@@ -216,10 +227,90 @@ async function readPage(page: PdfjsPageLike): Promise<PdfTextPage> {
       w: round2(Math.abs(raw.width) || 0),
       h: round2(Math.abs(raw.height) || fontSize),
       fontSize: round2(fontSize),
-      angle: Math.round((Math.atan2(-dy, dx) * 180) / Math.PI),
+      angle: Math.round((Math.atan2(-dy, dx) * 180) / Math.PI) || 0,
+      fontName,
+      monospace: styles[fontName]?.fontFamily === 'monospace',
     });
   }
+  if (page.getAnnotations) {
+    const toViewport = (x: number, y: number): [number, number] => [va * x + vc * y + ve, vb * x + vd * y + vf];
+    items.push(...fieldItems(await page.getAnnotations({ intent: 'display' }), toViewport, viewport.height));
+  }
   return { width: round2(viewport.width), height: round2(viewport.height), items };
+}
+
+interface RawWidget {
+  subtype?: unknown;
+  fieldType?: unknown;
+  fieldValue?: unknown;
+  rect?: unknown;
+  hidden?: unknown;
+  checkBox?: unknown;
+  radioButton?: unknown;
+  buttonValue?: unknown;
+  defaultAppearanceData?: { fontSize?: unknown } | null;
+}
+
+const AVERAGE_CHAR_EM = 0.5;
+
+/**
+ * Turn filled-in form field values into text items placed where the field
+ * sits: text and choice values as typed, ticked checkboxes and radio buttons
+ * as "X", so the page reads the same as if the form had been flattened.
+ */
+function fieldItems(
+  annotations: readonly unknown[],
+  toViewport: (x: number, y: number) => [number, number],
+  pageHeight: number,
+): PdfTextItem[] {
+  const out: PdfTextItem[] = [];
+  for (const a of annotations as RawWidget[]) {
+    if (!a || a.subtype !== 'Widget' || a.hidden === true || !Array.isArray(a.rect) || a.rect.length < 4) continue;
+    const [x1, y1, x2, y2] = (a.rect as unknown[]).map(Number) as [number, number, number, number];
+    const [ax, ay] = toViewport(x1, y1);
+    const [bx, by] = toViewport(x2, y2);
+    const left = Math.min(ax, bx);
+    const width = Math.abs(bx - ax);
+    const bottom = pageHeight - Math.max(ay, by);
+    const height = Math.abs(by - ay);
+    if (!(width > 0 && height > 0)) continue;
+
+    let lines: string[] = [];
+    if (a.fieldType === 'Tx' && typeof a.fieldValue === 'string') lines = a.fieldValue.split(/\r\n?|\n/);
+    else if (a.fieldType === 'Ch') lines = [([] as unknown[]).concat(a.fieldValue ?? []).map(String).join(', ')];
+    else if (a.fieldType === 'Btn') {
+      const on =
+        a.checkBox === true
+          ? typeof a.fieldValue === 'string' && a.fieldValue !== '' && a.fieldValue !== 'Off'
+          : a.radioButton === true && a.fieldValue !== undefined && a.fieldValue === a.buttonValue;
+      if (on) lines = ['X'];
+    }
+    lines = lines.map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) continue;
+
+    const declared = Number(a.defaultAppearanceData?.fontSize);
+    const fontSize = declared > 0 ? declared : Math.min(10, (height / lines.length) * 0.7);
+    const centered = lines.length === 1 && lines[0] === 'X';
+    lines.forEach((str, i) => {
+      const w = Math.min(width, str.length * AVERAGE_CHAR_EM * fontSize);
+      // Place each line so its middle falls in the field's band, top line first.
+      const bandTop = bottom + height - (i * height) / lines.length;
+      const bandMid = bandTop - height / lines.length / 2;
+      out.push({
+        str,
+        x: round2(centered ? left + (width - w) / 2 : left + Math.min(2, width / 10)),
+        y: round2(bandMid - 0.35 * fontSize),
+        w: round2(w),
+        h: round2(fontSize),
+        fontSize: round2(fontSize),
+        angle: 0,
+        fontName: '',
+        monospace: false,
+        formField: true,
+      });
+    });
+  }
+  return out;
 }
 
 function round2(n: number): number {
