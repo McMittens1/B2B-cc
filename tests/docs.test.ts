@@ -363,7 +363,7 @@ describe('buildStampedPayroll with the contractor original', () => {
     expect(first.text).toContain('REVIEWED against WD XX20260047 Mod 2 · 9/27/2026 · J. Rivera, Labor Standards Officer');
     expect(first.text).toContain('Result: 3 violations, $170.45 owed, 1 warning');
     expect(first.text).toContain('Worksheet: page 3');
-    expect(first.text).toContain('not a legal determination');
+    expect(pages[2]!.text).toContain('not a legal determination'); // on the worksheet, not over the form
     expect(pages[1]!.text).not.toContain('REVIEWED');
 
     // The notation sits in the top-right corner of the form, reading left to right.

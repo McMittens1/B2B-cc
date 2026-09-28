@@ -59,15 +59,16 @@ npm run preview        # serves dist/ at http://localhost:4173
 | Check | Basis |
 |---|---|
 | Basic hourly rate ≥ WD rate for the classification | 29 CFR 5.5(a)(1) |
-| Fringe paid to plans or in cash ≥ WD fringe (cash above the basic rate counts toward fringe, but extra fringe never offsets a low basic rate; percentage fringes are computed on the basic rate; fringe is owed on every hour, including overtime) | 29 CFR 5.5(a)(1), 5.24–5.32 |
-| Overtime at ≥ 1.5 × the basic rate for hours over 40, including hours over 40 paid at straight time (switchable per project) | Contract Work Hours and Safety Standards Act |
-| Apprentices: registered program on file, wage ≥ program %, full WD fringe unless the program says otherwise, apprentices over the ratio owed the journeyworker rate | 29 CFR 5.5(a)(4) |
+| Fringe paid to plans or in cash ≥ WD fringe (cash above the basic rate counts toward fringe, but extra fringe never offsets a low basic rate; percentage fringes are computed on the basic rate; fringe is owed on every hour, including overtime, with each hour's own credit) | 29 CFR 5.5(a)(1), 5.24–5.32 |
+| Overtime at ≥ 1.5 × the basic rate for hours over 40 in the worker's week, counted across all of the worker's lines (classifications), including hours over 40 paid at straight time and overtime paid at \$0. Cash paid in lieu of fringe is left out of the basic rate. Overtime-column hours that are not over 40 must still meet the WD rate. Switchable per project | Contract Work Hours and Safety Standards Act; 29 CFR 5.32 |
+| Apprentices: wage ≥ program % and full WD fringe unless the program says otherwise; an apprentice with no registered program on file for that classification is checked at the journeyworker rate; apprentices over the ratio (counted by person) owe the journeyworker rate, including overtime | 29 CFR 5.5(a)(4) |
 | Classification not on the WD (conformance needed) or not yet matched | 29 CFR 5.5(a)(1)(iii) |
 | Executive Order minimum for "**" classifications (only when you enable it for the project) | EO 13658 / WD notes |
 | Statement of Compliance signed | Copeland Act, 29 CFR 5.5(a)(3) |
 | Missing weeks (from the start date to the final payroll), late submissions, duplicate weeks, payroll-number gaps | 29 CFR 5.5(a)(3) |
 | Arithmetic: daily hours vs totals, gross vs hours × rates, net vs gross − deductions, project gross vs all-work gross | Form WH-347 instructions |
 | Full Social Security numbers on the payroll | Rev. 2025 WH-347 (identifying number only) |
+| Missing or invalid dates (reported, never fatal) | — |
 
 Underpayments are computed exactly, in cents, per worker per week, and every amount shows its arithmetic.
 
@@ -106,7 +107,13 @@ e2e/               Browser tests
 
 - No backend, no accounts, no analytics, no third-party requests. The production build includes a Content-Security-Policy limiting network access to the app's own origin.
 - Data is stored in IndexedDB in the reviewer's browser profile. Clearing site data deletes it, so **download backups**. Backups contain workers' names and pay; store them like any payroll record.
-- Payroll PDFs from third parties are parsed with pdf.js with script evaluation disabled. Spreadsheet exports neutralize formula injection.
+- Payroll files from third parties are treated as hostile:
+  - PDFs are parsed with pdf.js with script evaluation disabled, and a stored "PDF" opens in a tab only if its bytes are a PDF.
+  - Workbooks are size-checked before they are unpacked (zip bombs, huge declared ranges, XML entity tricks), and CSV files are capped at 20,000 rows.
+  - Stamped copies have scripts, launch actions and XFA removed.
+  - Spreadsheet exports neutralize formula injection.
+- A backup file is treated as untrusted too. Every record is rebuilt field by field, and the wage determination is re-read from its text. A restore that would touch another project's records is refused, and replacing an existing project asks first.
+- When hosting `dist/`, also send the CSP as an HTTP header. A `<meta>` CSP cannot set `frame-ancestors`, so add `frame-ancestors 'none'` in the header to prevent framing.
 
 ## Limitations
 

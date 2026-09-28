@@ -268,11 +268,11 @@ function stampFirstPage(page: PDFPage, ctx: StampContext, fonts: FlowFonts, work
   const result = reviewResult(ctx);
   const color = TONE_COLORS[result.tone];
   const size = viewWidth < 400 ? 6 : 7.5;
-  const margin = Math.min(12, Math.max(3, viewWidth * 0.015));
-  const pad = size * 0.6;
+  // Forms like the WH-347 have almost no top margin: keep the box to two lines, close to the edge,
+  // so it covers as little of the form's own heading as possible. The worksheet carries the rest.
+  const margin = Math.min(6, Math.max(3, viewWidth * 0.008));
+  const pad = size * 0.55;
   const maxBoxWidth = Math.min(440, viewWidth - 2 * margin);
-  const org = ctx.reviewer.organization.trim();
-  const footnote = `${org ? `${org}${SEPARATOR}` : ''}Reviewer's working notation, not a legal determination${SEPARATOR}Worksheet: page ${worksheetPage}`;
 
   const lines: StampLine[] = [];
   const add = (text: string, style: FontStyle, lineSize: number) => {
@@ -281,8 +281,7 @@ function stampFirstPage(page: PDFPage, ctx: StampContext, fonts: FlowFonts, work
     }
   };
   add(notation.heading, 'bold', size);
-  add(notation.result, 'bold', size);
-  add(footnote, 'oblique', size * 0.82);
+  add(`${notation.result}${SEPARATOR}Worksheet: page ${worksheetPage}`, 'bold', size);
 
   const textWidth = Math.max(...lines.map((l) => fonts[l.style].widthOfTextAtSize(l.text, l.size)));
   const boxWidth = Math.min(maxBoxWidth, textWidth + 2 * pad);
