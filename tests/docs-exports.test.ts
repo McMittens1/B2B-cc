@@ -181,8 +181,8 @@ describe('findingsToCsv', () => {
       'Superseded',
       'Finding key',
     ]);
-    expect(rows[1]).toMatchObject({ Detail: 'Line one,\nline two with "quotes"', Severity: 'Violation', Check: 'Fringe short' + 'fall' });
-    expect(rows[2]!.Contractor.startsWith("'=")).toBe(true);
+    expect(rows[1]).toMatchObject({ Detail: 'Line one,\nline two with "quotes"', Severity: 'Violation', Check: 'Fringe shortfall' });
+    expect(rows[2]!.Contractor!.startsWith("'=")).toBe(true);
     expect(rows[4]).toMatchObject({ Worker: '', 'Amount owed': '0.00', Check: 'Statement of Compliance missing' });
     expect(rows[5]).toMatchObject({ Contractor: 'Unknown contractor', 'Amount owed': '-3.00' });
   });
