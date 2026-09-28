@@ -21,6 +21,7 @@ import {
   safeFileName,
   useToast,
 } from '../ui';
+import { neutralizeFormula } from '../../engine/docs/exports';
 
 // ---------------------------------------------------------------------------
 // Constants and helpers
@@ -121,8 +122,7 @@ function appendNote(existing: string, extra: string): string {
 function csvCell(v: string | number | null | undefined): string {
   if (v === null || v === undefined) return '';
   if (typeof v === 'number') return Number.isFinite(v) ? v.toFixed(2) : '';
-  let s = v;
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  const s = neutralizeFormula(v); // same guard as the document exports (leading spaces, full-width signs)
   return /[",\r\n]/.test(s) || s !== s.trim() ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

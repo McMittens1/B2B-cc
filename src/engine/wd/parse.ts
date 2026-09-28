@@ -325,14 +325,17 @@ function parseBlock(
         eo = true;
         fringeText = fringeText.replace(/\*+/g, ' ');
       }
-      const occurrence = (idOccurrences.get(rateId) ?? 0) + 1;
-      idOccurrences.set(rateId, occurrence);
+      // Keys combine the rate identifier with the label, so a saved job-title match keeps pointing
+      // at the same classification when the WD is reloaded with lines added or removed.
+      const slug = labelSlug(label || rateId);
+      const occurrence = (idOccurrences.get(`${rateId}#${slug}`) ?? 0) + 1;
+      idOccurrences.set(`${rateId}#${slug}`, occurrence);
 
       if (!Number.isFinite(baseRate)) {
         warnings.push(`Line ${i + 1}: could not read the rate in "${raw.trim()}".`);
       } else {
         out.push({
-          key: `${rateId}#${occurrence}`,
+          key: occurrence === 1 ? `${rateId}#${slug}` : `${rateId}#${slug}#${occurrence}`,
           rateId,
           rateIdEffective: effective,
           kind,
@@ -430,4 +433,9 @@ function parseGroupDefinitions(notes: string[]): Map<number, string> {
   }
   flush();
   return defs;
+}
+
+/** Lowercase letters and digits of a label, joined by single dashes, for classification keys. */
+export function labelSlug(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'classification';
 }

@@ -363,6 +363,23 @@ describe('readSpreadsheet', () => {
     await expectSpreadsheetError(readSpreadsheet(zip(WORKBOOK_PARTS(sheet))), /1,048,576 rows × 16,384 columns/);
   });
 
+  it('refuses a text file with far more rows than a payroll, without parsing all of it', async () => {
+    const text = 'Employee,Hours\n' + 'Doe,8\n'.repeat(25_000);
+    const result = await importPayrollFile('huge.csv', new TextEncoder().encode(text));
+    expect(result.status).toBe('error');
+    expect(result.message).toMatch(/more than 20,000 rows/);
+  });
+
+  it('reads the used range however the attribute is quoted or spaced', async () => {
+    // Single quotes, spaces around "=" and long row numbers are valid XML and must not slip past the guard.
+    for (const dim of [`<dimension ref='A1:Z4000000'/>`, '<dimension ref = "A1:Z4000000"/>', '<dimension ref="A1:Z40000000"/>']) {
+      const sheet = `<?xml version="1.0"?><worksheet>${dim}<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c></row></sheetData></worksheet>`;
+      await expectSpreadsheetError(readSpreadsheet(zip(WORKBOOK_PARTS(sheet))), /too large to open safely/);
+    }
+    const unreadable = '<?xml version="1.0"?><worksheet><dimension ref=A1:Z4000000/><sheetData/></worksheet>';
+    await expectSpreadsheetError(readSpreadsheet(zip(WORKBOOK_PARTS(unreadable))), /unreadable size declaration/);
+  });
+
   it('refuses a sheet with a single cell placed far away', async () => {
     const sheet = '<?xml version="1.0"?><worksheet><sheetData><row r="900000"><x:c r="ZZ900000" t="inlineStr"><is><t>x</t></is></x:c></row></sheetData></worksheet>';
     await expectSpreadsheetError(readSpreadsheet(zip(WORKBOOK_PARTS(sheet))), /too large to open safely/);

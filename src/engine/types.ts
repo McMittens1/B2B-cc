@@ -265,7 +265,8 @@ export type RuleId =
   | 'payroll-number-gap'
   | 'per-day-rate'
   | 'fringe-footnote'
-  | 'missing-week';
+  | 'missing-week'
+  | 'invalid-date';
 
 export interface Finding {
   /** Deterministic key so review decisions and restitution survive recomputation. */

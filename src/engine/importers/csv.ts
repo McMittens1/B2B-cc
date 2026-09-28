@@ -1,4 +1,5 @@
 import Papa from 'papaparse';
+import { SpreadsheetError } from './xlsx';
 
 /**
  * Delimited text (CSV, TSV, semicolon- or pipe-separated) as rows of string cells.
@@ -10,6 +11,8 @@ import Papa from 'papaparse';
 
 const DELIMITERS = [',', ';', '\t', '|'] as const;
 const SAMPLE_CHARS = 64 * 1024;
+/** A weekly payroll is a few hundred rows at most; far more means the wrong file (and would stall the browser). */
+export const MAX_CSV_ROWS = 20_000;
 
 export function parseCsvText(text: string): string[][] {
   const clean = text.replace(/^\uFEFF/, '').replace(/\u0000/g, '');
@@ -19,7 +22,11 @@ export function parseCsvText(text: string): string[][] {
     header: false,
     dynamicTyping: false,
     skipEmptyLines: false,
+    preview: MAX_CSV_ROWS + 1,
   });
+  if (result.data.length > MAX_CSV_ROWS) {
+    throw new SpreadsheetError(`The file has more than ${MAX_CSV_ROWS.toLocaleString('en-US')} rows, which is far more than a weekly payroll. Check that it is the right file, or export just the one week.`);
+  }
   const rows = result.data.map((row) => (Array.isArray(row) ? row.map((c) => (typeof c === 'string' ? c : '')) : []));
   while (rows.length > 0 && rows[rows.length - 1]!.every((c) => c.trim() === '')) rows.pop();
   return rows;

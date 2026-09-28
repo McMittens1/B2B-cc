@@ -1,4 +1,4 @@
-import { addDays, daysBetween, formatDate, nextWeekday, weekday } from '../dates';
+import { addDays, daysBetween, formatDate, isIsoDate, nextWeekday, weekday } from '../dates';
 import { resolveClassification } from '../mapping';
 import { cents, extend, formatHours, formatMoney, formatRate, rate, sum } from '../money';
 import type {
@@ -80,7 +80,32 @@ export interface Evaluation {
   totalOwed: number;
 }
 
-const TOL_RATE = 0.005; // half a cent per hour
+/** A twentieth of a cent per hour: WD rates carry up to three decimals, so $26.85 against $26.855 is short. */
+const TOL_RATE = 0.0005;
+
+/**
+ * How one line's hours fall for the overtime rules. The 40-hour threshold applies to the
+ * worker's week, so a worker on two lines (two classifications) is counted once.
+ */
+interface HourSplit {
+  st: number;
+  /** Overtime-column hours that are over 40 for the week: owed at 1.5 × the basic rate. */
+  premiumOT: number;
+  /** Overtime-column hours that are not over 40 (e.g. daily overtime): owed at least the WD rate. */
+  plainOT: number;
+  /** Hours over 40 for the week that were reported as straight time. */
+  unreported: number;
+  workerLines: number;
+  workerHours: number;
+  workerOT: number;
+}
+
+interface LineInfo {
+  line: PayrollLine;
+  analysis: LineAnalysis;
+  split: HourSplit;
+  worker: string;
+}
 
 export function evaluateProject(input: EvaluationInput): Evaluation {
   const { project, wd, contractors, payrolls, mappings, asOf } = input;
@@ -100,14 +125,14 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
     const replacedBy = supersededBy.get(payroll.id);
     const contractor = contractorById.get(payroll.contractorId);
     const pf: Finding[] = [];
-    const add = (f: Omit<Finding, 'key' | 'contractorId' | 'payrollId' | 'weekEnding'> & { keySuffix?: string }) => {
-      const { keySuffix, ...rest } = f;
+    const add: AddFn = (f) => {
+      const { keySuffix, keyRule, ...rest } = f;
       pf.push({
         ...rest,
-        key: [rest.ruleId, payroll.id, rest.lineId ?? '-', keySuffix ?? ''].join(':'),
+        key: [keyRule ?? rest.ruleId, payroll.id, rest.lineId ?? '-', keySuffix ?? ''].join(':'),
         contractorId: payroll.contractorId,
         payrollId: payroll.id,
-        weekEnding: payroll.weekEnding,
+        weekEnding: isIsoDate(payroll.weekEnding) ? payroll.weekEnding : null,
       });
     };
 
@@ -135,7 +160,29 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
       });
     }
 
-    if (payroll.receivedDate) {
+    if (!isIsoDate(payroll.weekEnding)) {
+      add({
+        ruleId: 'invalid-date',
+        severity: 'warning',
+        lineId: null,
+        workerName: null,
+        keySuffix: 'week-ending',
+        title: 'Week ending date is missing or invalid',
+        detail: 'Enter the week ending date so this payroll is placed in the right week. Late-submission and missing-week checks skip it until then.',
+        amountOwed: 0,
+      });
+    } else if (payroll.receivedDate && !isIsoDate(payroll.receivedDate)) {
+      add({
+        ruleId: 'invalid-date',
+        severity: 'warning',
+        lineId: null,
+        workerName: null,
+        keySuffix: 'received',
+        title: 'Date received is invalid',
+        detail: 'Correct the date received so late submission can be checked.',
+        amountOwed: 0,
+      });
+    } else if (payroll.receivedDate) {
       const days = daysBetween(payroll.weekEnding, payroll.receivedDate);
       if (days > project.settings.lateAfterDays) {
         add({
@@ -151,11 +198,13 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
     }
 
     // Line-level checks.
-    const lineInfos: { line: PayrollLine; analysis: LineAnalysis }[] = [];
+    const splits = splitHours(payroll.lines, project.settings.overtimeRuleApplies);
+    const lineInfos: LineInfo[] = [];
     for (const line of payroll.lines) {
-      const analysis = analyzeLine(line, payroll, contractor, project, classifications, byKey, mappings, add);
+      const split = splits.get(line.id)!;
+      const analysis = analyzeLine(line, split, payroll, contractor, project, classifications, byKey, mappings, add);
       lines.set(line.id, analysis);
-      lineInfos.push({ line, analysis });
+      lineInfos.push({ line, analysis, split, worker: workerKey(line) });
     }
 
     // Apprentice ratio per classification.
@@ -194,11 +243,12 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
     else findings.push(...pf);
   }
 
-  // Contractor-level: duplicates, numbering gaps, missing weeks.
+  // Contractor-level: duplicates, numbering gaps, missing weeks. Payrolls without a usable
+  // week ending cannot be placed in a week; they carry their own finding above.
   const weeks: ContractorWeeks[] = [];
   for (const contractor of contractors) {
     const own = payrolls
-      .filter((p) => p.contractorId === contractor.id && !superseded.has(p.id))
+      .filter((p) => p.contractorId === contractor.id && !superseded.has(p.id) && isIsoDate(p.weekEnding))
       .sort((a, b) => a.weekEnding.localeCompare(b.weekEnding));
     findings.push(...contractorFindings(contractor, own));
     const w = contractorWeeks(contractor, own, summaries, project, asOf);
@@ -228,11 +278,159 @@ export function evaluateProject(input: EvaluationInput): Evaluation {
 // ---------------------------------------------------------------------------
 
 type AddFn = (
-  f: Omit<Finding, 'key' | 'contractorId' | 'payrollId' | 'weekEnding'> & { keySuffix?: string },
+  f: Omit<Finding, 'key' | 'contractorId' | 'payrollId' | 'weekEnding'> & {
+    keySuffix?: string;
+    /** Key segment used instead of the rule id, so a key survives a change of rule variant. */
+    keyRule?: string;
+  },
 ) => void;
+
+/**
+ * Base-rate findings use one key whichever variant applies (WD rate, apprentice rate, Executive
+ * Order minimum), so recorded restitution is not orphaned when a setting or the apprentice flag changes.
+ */
+const BASE_KEY = 'base-rate';
+
+/** Identifies a worker within one payroll: name and identifying number. */
+function workerKey(line: PayrollLine): string {
+  const name = normalizeLabel(line.workerName);
+  const id = line.workerId.replace(/\s+/g, '').toLowerCase();
+  return name || id ? `${name}|${id}` : `line:${line.id}`;
+}
+
+const round2 = (x: number) => Math.round(x * 100) / 100;
+const finite = (x: number) => (Number.isFinite(x) ? x : 0);
+
+/** Split `total` over `weights` in proportion, in hundredths; the rounding remainder goes to the last weighted item. */
+function allocate(weights: readonly number[], total: number): number[] {
+  const w = sum(weights);
+  if (!(total > 0) || !(w > 0)) return weights.map(() => 0);
+  const out = weights.map((x) => (x > 0 ? Math.floor((x / w) * total * 100 + 1e-6) / 100 : 0));
+  let last = -1;
+  weights.forEach((x, i) => {
+    if (x > 0) last = i;
+  });
+  out[last] = round2(out[last]! + total - sum(out));
+  return out;
+}
+
+function splitHours(lines: readonly PayrollLine[], overtimeApplies: boolean): Map<string, HourSplit> {
+  const groups = new Map<string, PayrollLine[]>();
+  for (const line of lines) {
+    const k = workerKey(line);
+    const list = groups.get(k) ?? [];
+    list.push(line);
+    groups.set(k, list);
+  }
+  const out = new Map<string, HourSplit>();
+  for (const group of groups.values()) {
+    const st = group.map((l) => Math.max(0, finite(l.totalST)));
+    const ot = group.map((l) => Math.max(0, finite(l.totalOT)));
+    const totalST = sum(st);
+    const totalOT = sum(ot);
+    const workerHours = round2(totalST + totalOT);
+    const over40 = overtimeApplies ? Math.max(0, round2(workerHours - 40)) : 0;
+    const premium = allocate(ot, Math.min(totalOT, over40));
+    const unreported = allocate(st, round2(Math.max(0, over40 - totalOT)));
+    group.forEach((l, i) =>
+      out.set(l.id, {
+        st: st[i]!,
+        premiumOT: premium[i]!,
+        plainOT: round2(ot[i]! - premium[i]!),
+        unreported: unreported[i]!,
+        workerLines: group.length,
+        workerHours,
+        workerOT: round2(totalOT),
+      }),
+    );
+  }
+  return out;
+}
+
+/** Amounts owed on one line against a required basic rate and fringe. */
+interface Obligation {
+  /** Basic rate for overtime: the rate paid, less any part of it that is cash in lieu of fringe, never below the WD rate. */
+  regular: number;
+  requiredOT: number;
+  baseShortST: number;
+  baseST: number;
+  plainShort: number;
+  basePlainOT: number;
+  otShort: number;
+  otPremium: number;
+  unreportedPremium: number;
+  fringe: number;
+  fringeParts: { hours: number; perHour: number; kind: 'straight time' | 'overtime' | 'overtime (not over 40)' }[];
+  total: number;
+}
+
+function obligations(requiredBase: number, requiredF: number, line: PayrollLine, paidOT: number | null, split: HourSplit): Obligation {
+  const paidBase = rate(finite(line.rateST));
+  const credit = rate(finite(line.fringePlanHourly) + finite(line.fringeCashHourly));
+  const over = (short: number) => (short > TOL_RATE ? short : 0);
+
+  const excessST = Math.max(0, rate(paidBase - requiredBase));
+  const baseShortST = over(Math.max(0, rate(requiredBase - paidBase)));
+  const fringeShortST = over(Math.max(0, rate(requiredF - credit - excessST)));
+  const regular = Math.max(requiredBase, rate(paidBase - Math.max(0, requiredF - credit)));
+  const requiredOT = rate(regular * 1.5);
+
+  let otShort = 0;
+  let plainShort = 0;
+  let fringeShortOT = fringeShortST;
+  let fringeShortPlain = fringeShortST;
+  if (paidOT !== null) {
+    otShort = over(Math.max(0, rate(requiredOT - paidOT)));
+    fringeShortOT = over(Math.max(0, rate(requiredF - credit - Math.max(0, paidOT - requiredOT))));
+    plainShort = over(Math.max(0, rate(requiredBase - paidOT)));
+    fringeShortPlain = over(Math.max(0, rate(requiredF - credit - Math.max(0, paidOT - requiredBase))));
+  }
+
+  const parts: Obligation['fringeParts'] = [];
+  const addPart = (hours: number, perHour: number, kind: Obligation['fringeParts'][number]['kind']) => {
+    if (hours <= 0 || perHour <= 0) return;
+    const same = parts.find((p) => p.perHour === perHour);
+    if (same) same.hours = round2(same.hours + hours);
+    else parts.push({ hours, perHour, kind });
+  };
+  addPart(split.st, fringeShortST, 'straight time');
+  addPart(split.premiumOT, fringeShortOT, 'overtime');
+  addPart(split.plainOT, fringeShortPlain, 'overtime (not over 40)');
+
+  const baseST = extend(split.st, baseShortST);
+  const basePlainOT = extend(split.plainOT, plainShort);
+  const otPremium = extend(split.premiumOT, otShort);
+  const unreportedPremium = extend(split.unreported, rate(regular * 0.5));
+  const fringe = cents(sum(parts.map((p) => extend(p.hours, p.perHour))));
+  return {
+    regular,
+    requiredOT,
+    baseShortST,
+    baseST,
+    plainShort,
+    basePlainOT,
+    otShort,
+    otPremium,
+    unreportedPremium,
+    fringe,
+    fringeParts: parts,
+    total: cents(baseST + basePlainOT + otPremium + unreportedPremium + fringe),
+  };
+}
+
+/** Overtime rate reported on the line, or derived from gross pay when only the gross is given. */
+function overtimeRate(line: PayrollLine, split: HourSplit): number | null {
+  if (line.rateOT !== null && Number.isFinite(line.rateOT)) return line.rateOT;
+  const hoursOT = finite(line.totalOT);
+  if (hoursOT <= 0 || line.grossThisProject === null || !Number.isFinite(line.grossThisProject)) return null;
+  const hours = split.st + hoursOT;
+  const derived = (line.grossThisProject - extend(split.st, finite(line.rateST)) - extend(hours, finite(line.fringeCashHourly))) / hoursOT;
+  return Number.isFinite(derived) ? rate(Math.max(0, derived)) : null;
+}
 
 function analyzeLine(
   line: PayrollLine,
+  split: HourSplit,
   payroll: Payroll,
   contractor: Contractor | undefined,
   project: Project,
@@ -242,12 +440,10 @@ function analyzeLine(
   add: AddFn,
 ): LineAnalysis {
   const worker = line.workerName || '(unnamed worker)';
-  const hoursST = line.totalST;
-  const hoursOT = line.totalOT;
-  const hours = hoursST + hoursOT;
-  const paidBase = rate(line.rateST);
-  const paidFringe = rate(line.fringePlanHourly + line.fringeCashHourly);
+  const paidBase = rate(finite(line.rateST));
+  const paidFringe = rate(finite(line.fringePlanHourly) + finite(line.fringeCashHourly));
   const tol = project.settings.arithmeticToleranceDollars;
+  const paidOT = overtimeRate(line, split);
 
   const analysis: LineAnalysis = {
     lineId: line.id,
@@ -257,14 +453,13 @@ function analyzeLine(
     requiredFringe: null,
     paidBase,
     paidFringe,
-    paidOT: line.rateOT,
+    paidOT,
     owed: 0,
     apprenticeProgram: null,
   };
 
   // Identifying number: the Rev. 2025 WH-347 asks for an identifying number, not a full SSN.
-  const digits = line.workerId.replace(/\D/g, '');
-  if (digits.length === 9 && /^\d{3}-?\d{2}-?\d{4}$/.test(line.workerId.trim())) {
+  if (/^\d{3}[-\s.]?\d{2}[-\s.]?\d{4}$/.test(line.workerId.trim())) {
     add({
       ruleId: 'full-ssn',
       severity: 'warning',
@@ -278,7 +473,13 @@ function analyzeLine(
   }
 
   // Arithmetic checks that do not depend on the wage determination.
-  checkArithmetic(line, worker, tol, add, analysis);
+  checkArithmetic(line, worker, tol, add);
+
+  // Overtime still applies when the rates cannot be checked against the WD: measured against the rate paid.
+  const overtimeOnly = () => {
+    analysis.owed = reportOvertime(obligations(0, 0, line, paidOT, split), line, split, paidOT, worker, project, add);
+    return analysis;
+  };
 
   // Classification.
   const resolved = resolveClassification(line.classification, payroll.contractorId, mappings, classifications);
@@ -294,7 +495,7 @@ function analyzeLine(
         'Work in a classification that is not listed on the wage determination requires an approved conformance (SF-1444 request through the contracting agency) before the rate can be accepted. Otherwise the worker may be misclassified and owed the rate for the listed classification that matches the work performed.',
       amountOwed: 0,
     });
-    return analysis;
+    return overtimeOnly();
   }
   const c = resolved.key ? byKey.get(resolved.key) ?? null : null;
   if (!c) {
@@ -311,7 +512,7 @@ function analyzeLine(
         'Rates cannot be checked until this job title is matched to a classification on the wage determination. The mapping is remembered for this contractor.',
       amountOwed: 0,
     });
-    return analysis;
+    return overtimeOnly();
   }
   analysis.classification = c;
   analysis.mappingSource = resolved.source;
@@ -323,10 +524,10 @@ function analyzeLine(
       lineId: line.id,
       workerName: worker,
       title: `${c.label} is paid per day on the wage determination`,
-      detail: `The wage determination lists ${formatRate(c.baseRate)} per day for this classification. Hourly checks are skipped; compare the daily amount manually.`,
+      detail: `The wage determination lists ${formatRate(c.baseRate)} per day for this classification. Hourly rate checks are skipped; compare the daily amount manually. Overtime over 40 hours is still checked against the rate paid.`,
       amountOwed: 0,
     });
-    return analysis;
+    return overtimeOnly();
   }
 
   // Required rates.
@@ -334,28 +535,39 @@ function analyzeLine(
   let requiredF = requiredFringe(c.fringe, c.baseRate);
   let baseRule: RuleId = 'base-rate-below-wd';
   let program: ApprenticeProgram | null = null;
+  let unregistered = false;
   if (line.apprentice) {
     program = findProgram(contractor, c, line.classification);
     analysis.apprenticeProgram = program;
-    if (!program || program.wagePercent === null) {
+    if (!program) {
+      // 29 CFR 5.5(a)(4)(i): a worker paid as an apprentice who is not registered is owed the journeyworker rate.
+      unregistered = true;
+      add({
+        ruleId: 'apprentice-unregistered',
+        severity: 'violation',
+        lineId: line.id,
+        workerName: worker,
+        title: `${worker}: apprentice registration not on file`,
+        detail:
+          'Apprentices may be paid less than the journeyworker rate only if they are individually registered in a program registered with the DOL Office of Apprenticeship or a recognized State Apprenticeship Agency. No program for this classification is recorded for the contractor, so the line is checked at the journeyworker rate. If the apprentice is registered, add the program under Contractors and the line is rechecked.',
+        amountOwed: 0,
+      });
+    } else if (program.wagePercent === null) {
       add({
         ruleId: 'apprentice-unregistered',
         severity: 'warning',
         lineId: line.id,
         workerName: worker,
-        title: program ? 'Apprentice wage percentage not recorded' : 'Apprentice registration not on file',
-        detail: program
-          ? `Enter the wage percentage for the "${program.name}" program so the apprentice rate can be checked.`
-          : 'Apprentices may be paid less than the journeyworker rate only if they are individually registered in a program registered with the DOL Office of Apprenticeship or a recognized State Apprenticeship Agency. Record the program for this contractor, or treat the worker as a journeyworker. Until then the apprentice rate is not checked.',
+        title: 'Apprentice wage percentage not recorded',
+        detail: `Enter the wage percentage for the "${program.name}" program so the apprentice rate can be checked.`,
         amountOwed: 0,
       });
-      analysis.requiredBase = null;
-      analysis.requiredFringe = null;
-      return analysis;
+      return overtimeOnly();
+    } else {
+      requiredBase = rate((c.baseRate * program.wagePercent) / 100);
+      requiredF = program.fringePercent === null ? requiredF : rate((requiredF * program.fringePercent) / 100);
+      baseRule = 'apprentice-rate';
     }
-    requiredBase = rate((c.baseRate * program.wagePercent) / 100);
-    requiredF = program.fringePercent === null ? requiredF : rate((requiredF * program.fringePercent) / 100);
-    baseRule = 'apprentice-rate';
   }
   const eoMin = project.settings.executiveOrderMinimumWage;
   if (c.executiveOrderFlag && eoMin !== null && eoMin > requiredBase) {
@@ -365,82 +577,101 @@ function analyzeLine(
   analysis.requiredBase = requiredBase;
   analysis.requiredFringe = requiredF;
 
-  // Straight-time base and fringe.
-  const baseShort = Math.max(0, rate(requiredBase - paidBase));
-  const excessBase = Math.max(0, rate(paidBase - requiredBase));
-  const fringeShort = Math.max(0, rate(requiredF - paidFringe - excessBase));
-  let owed = 0;
+  const o = obligations(requiredBase, requiredF, line, paidOT, split);
+  const required = `${describeRequired(c, program, baseRule)}${unregistered ? ' Apprentice not registered: the journeyworker rate applies.' : ''}`;
 
-  if (baseShort > TOL_RATE && hoursST > 0) {
-    const amount = extend(hoursST, baseShort);
-    owed += amount;
+  if (o.baseST > 0) {
     add({
       ruleId: baseRule,
+      keyRule: BASE_KEY,
       severity: 'violation',
       lineId: line.id,
       workerName: worker,
       title: `${worker}: basic rate ${formatRate(paidBase)} is below ${formatRate(requiredBase)}`,
-      detail: `${describeRequired(c, program, baseRule)} Paid ${formatRate(paidBase)}/hr. Short ${formatRate(baseShort)}/hr × ${formatHours(hoursST)} straight-time hrs = ${formatMoney(amount)}.`,
-      amountOwed: amount,
+      detail: `${required} Paid ${formatRate(paidBase)}/hr. Short ${formatRate(o.baseShortST)}/hr × ${formatHours(split.st)} straight-time hrs = ${formatMoney(o.baseST)}.`,
+      amountOwed: o.baseST,
     });
   }
-
-  if (fringeShort > TOL_RATE && hours > 0) {
-    const amount = extend(hours, fringeShort);
-    owed += amount;
+  if (o.basePlainOT > 0 && paidOT !== null) {
+    add({
+      ruleId: baseRule,
+      keyRule: BASE_KEY,
+      keySuffix: 'ot',
+      severity: 'violation',
+      lineId: line.id,
+      workerName: worker,
+      title: `${worker}: overtime-column hours paid ${formatRate(paidOT)}, below ${formatRate(requiredBase)}`,
+      detail: `${required} ${formatHours(split.plainOT)} hrs reported as overtime (not over 40 for the week) were paid ${formatRate(paidOT)}/hr. Short ${formatRate(o.plainShort)}/hr × ${formatHours(split.plainOT)} hrs = ${formatMoney(o.basePlainOT)}.`,
+      amountOwed: o.basePlainOT,
+    });
+  }
+  if (o.fringe > 0) {
+    const hours = round2(sum(o.fringeParts.map((p) => p.hours)));
+    const math =
+      o.fringeParts.length === 1
+        ? `Fringe is owed on all hours worked: ${formatRate(o.fringeParts[0]!.perHour)} × ${formatHours(hours)} hrs = ${formatMoney(o.fringe)}.`
+        : `Fringe is owed on all hours worked: ${o.fringeParts.map((p) => `${formatRate(p.perHour)} × ${formatHours(p.hours)} ${p.kind} hrs`).join(' + ')} = ${formatMoney(o.fringe)}.`;
+    const excessST = Math.max(0, rate(paidBase - requiredBase));
     add({
       ruleId: 'fringe-shortfall',
       severity: 'violation',
       lineId: line.id,
       workerName: worker,
-      title: `${worker}: fringe short ${formatRate(fringeShort)}/hr`,
-      detail: `Required fringe ${formatRate(requiredF)}/hr (WD "${c.fringe.raw || '0'}"${program ? `, apprentice program ${program.fringePercent ?? 100}%` : ''}). Credited ${formatRate(line.fringePlanHourly)} plan + ${formatRate(line.fringeCashHourly)} cash${excessBase > 0 ? ` + ${formatRate(excessBase)} basic rate paid above the minimum` : ''}. Fringe is owed on all hours worked: ${formatRate(fringeShort)} × ${formatHours(hours)} hrs = ${formatMoney(amount)}.`,
-      amountOwed: amount,
+      title: `${worker}: fringe short ${formatRate(o.fringeParts[0]!.perHour)}/hr`,
+      detail: `Required fringe ${formatRate(requiredF)}/hr (WD "${c.fringe.raw || '0'}"${program ? `, apprentice program ${program.fringePercent ?? 100}%` : ''}). Credited ${formatRate(line.fringePlanHourly)} plan + ${formatRate(line.fringeCashHourly)} cash${excessST > 0 ? ` + ${formatRate(excessST)} basic rate paid above the minimum` : ''}. ${math}`,
+      amountOwed: o.fringe,
     });
   }
-
-  // Overtime (Contract Work Hours and Safety Standards Act: over 40 hours in the workweek).
-  if (project.settings.overtimeRuleApplies) {
-    const regular = Math.max(paidBase, requiredBase);
-    const requiredOT = rate(regular * 1.5);
-    let paidOT = line.rateOT;
-    if (paidOT === null && hoursOT > 0 && line.grossThisProject !== null) {
-      const derived = (line.grossThisProject - extend(hoursST, paidBase) - extend(hours, line.fringeCashHourly)) / hoursOT;
-      if (Number.isFinite(derived) && derived > 0) paidOT = rate(derived);
-    }
-    analysis.paidOT = paidOT;
-    if (hoursOT > 0 && paidOT !== null && requiredOT - paidOT > TOL_RATE) {
-      const short = rate(requiredOT - paidOT);
-      const amount = extend(hoursOT, short);
-      owed += amount;
-      add({
-        ruleId: 'overtime-rate',
-        severity: 'violation',
-        lineId: line.id,
-        workerName: worker,
-        title: `${worker}: overtime paid at ${formatRate(paidOT)} instead of ${formatRate(requiredOT)}`,
-        detail: `Hours over 40 in the workweek must be paid at least 1.5 × the basic rate (${formatRate(regular)} × 1.5 = ${formatRate(requiredOT)}). Short ${formatRate(short)}/hr × ${formatHours(hoursOT)} OT hrs = ${formatMoney(amount)}.`,
-        amountOwed: amount,
-      });
-    }
-    const unreported = Math.round((hours - 40 - hoursOT) * 100) / 100;
-    if (unreported > 0.001) {
-      const amount = extend(unreported, rate(regular * 0.5));
-      owed += amount;
-      add({
-        ruleId: 'overtime-unreported',
-        severity: 'violation',
-        lineId: line.id,
-        workerName: worker,
-        title: `${worker}: ${formatHours(hours)} hours with only ${formatHours(hoursOT)} paid as overtime`,
-        detail: `${formatHours(unreported)} hours over 40 were paid at straight time. The overtime premium owed is 0.5 × ${formatRate(regular)} × ${formatHours(unreported)} hrs = ${formatMoney(amount)}.`,
-        amountOwed: amount,
-      });
-    }
-  }
-
-  analysis.owed = cents(owed);
+  const overtimeOwed = reportOvertime(o, line, split, paidOT, worker, project, add);
+  analysis.owed = cents(o.baseST + o.basePlainOT + o.fringe + overtimeOwed);
   return analysis;
+}
+
+/** Overtime findings (CWHSSA: hours over 40 in the workweek at 1.5 × the basic rate). Returns the amount owed. */
+function reportOvertime(o: Obligation, line: PayrollLine, split: HourSplit, paidOT: number | null, worker: string, project: Project, add: AddFn): number {
+  if (!project.settings.overtimeRuleApplies) return 0;
+  const lineOT = finite(line.totalOT);
+  const acrossLines =
+    split.workerLines > 1 ? ` ${worker} worked ${formatHours(split.workerHours)} hrs this week across ${split.workerLines} payroll lines.` : '';
+  let owed = 0;
+  if (split.premiumOT > 0 && paidOT === null) {
+    add({
+      ruleId: 'overtime-rate',
+      keySuffix: 'unknown',
+      severity: 'warning',
+      lineId: line.id,
+      workerName: worker,
+      title: `${worker}: overtime rate not shown`,
+      detail: `The payroll shows ${formatHours(lineOT)} overtime hrs but no overtime rate, and no gross pay to work it out from. Ask for the rate; this overtime cannot be checked until then.`,
+      amountOwed: 0,
+    });
+  }
+  if (o.otPremium > 0 && paidOT !== null) {
+    owed += o.otPremium;
+    const partial = split.premiumOT < lineOT ? ` (${formatHours(split.premiumOT)} of the ${formatHours(lineOT)} overtime hrs on this line are over 40 for the week)` : '';
+    add({
+      ruleId: 'overtime-rate',
+      severity: 'violation',
+      lineId: line.id,
+      workerName: worker,
+      title: `${worker}: overtime paid at ${formatRate(paidOT)} instead of ${formatRate(o.requiredOT)}`,
+      detail: `Hours over 40 in the workweek must be paid at least 1.5 × the basic rate (${formatRate(o.regular)} × 1.5 = ${formatRate(o.requiredOT)}).${acrossLines} Short ${formatRate(o.otShort)}/hr × ${formatHours(split.premiumOT)} OT hrs${partial} = ${formatMoney(o.otPremium)}.`,
+      amountOwed: o.otPremium,
+    });
+  }
+  if (o.unreportedPremium > 0) {
+    owed += o.unreportedPremium;
+    add({
+      ruleId: 'overtime-unreported',
+      severity: 'violation',
+      lineId: line.id,
+      workerName: worker,
+      title: `${worker}: ${formatHours(split.workerHours)} hours with only ${formatHours(split.workerOT)} paid as overtime`,
+      detail: `${formatHours(split.unreported)} hours over 40 were paid at straight time.${acrossLines} The overtime premium owed is 0.5 × ${formatRate(o.regular)} × ${formatHours(split.unreported)} hrs = ${formatMoney(o.unreportedPremium)}.`,
+      amountOwed: o.unreportedPremium,
+    });
+  }
+  return cents(owed);
 }
 
 function describeRequired(c: WDClassification, program: ApprenticeProgram | null, rule: RuleId): string {
@@ -455,6 +686,7 @@ function describeRequired(c: WDClassification, program: ApprenticeProgram | null
   return wd;
 }
 
+/** The contractor's registered program for this classification; never another trade's program. */
 function findProgram(
   contractor: Contractor | undefined,
   c: WDClassification,
@@ -467,10 +699,10 @@ function findProgram(
     const pc = normalizeLabel(p.classification);
     return pc !== '' && targets.some((t) => t.includes(pc) || pc.includes(t));
   });
-  return match ?? (programs.length === 1 ? programs[0]! : null);
+  return match ?? null;
 }
 
-function checkArithmetic(line: PayrollLine, worker: string, tol: number, add: AddFn, analysis: LineAnalysis) {
+function checkArithmetic(line: PayrollLine, worker: string, tol: number, add: AddFn) {
   const dailyST = sum(line.dailyST);
   const dailyOT = sum(line.dailyOT);
   const hasDaily = line.dailyST.some((h) => h !== 0) || line.dailyOT.some((h) => h !== 0);
@@ -530,15 +762,21 @@ function checkArithmetic(line: PayrollLine, worker: string, tol: number, add: Ad
       amountOwed: 0,
     });
   }
-  void analysis;
 }
 
-function checkApprenticeRatios(
-  lineInfos: { line: PayrollLine; analysis: LineAnalysis }[],
-  project: Project,
-  add: AddFn,
-) {
-  const groups = new Map<string, { line: PayrollLine; analysis: LineAnalysis }[]>();
+/** How many apprentices a ratio allows. Below 1 it is read as "1 apprentice per N journeyworkers" (0.33 → 1 per 3). */
+function allowedApprentices(journeyworkers: number, ratio: number): number {
+  if (ratio >= 1) return Math.floor(journeyworkers * ratio + 1e-9);
+  return Math.floor(journeyworkers / Math.round(1 / ratio));
+}
+
+function ratioLabel(ratio: number): string {
+  if (ratio >= 1) return `${Math.round(ratio * 100) / 100} apprentice${ratio === 1 ? '' : 's'} per journeyworker`;
+  return `1 apprentice per ${Math.round(1 / ratio)} journeyworkers`;
+}
+
+function checkApprenticeRatios(lineInfos: readonly LineInfo[], project: Project, add: AddFn) {
+  const groups = new Map<string, LineInfo[]>();
   for (const li of lineInfos) {
     const c = li.analysis.classification;
     if (!c) continue;
@@ -547,40 +785,34 @@ function checkApprenticeRatios(
     groups.set(c.key, list);
   }
   for (const [, list] of groups) {
-    const apprentices = list.filter((li) => li.line.apprentice && li.analysis.apprenticeProgram);
-    if (apprentices.length === 0) continue;
-    const journey = list.filter((li) => !li.line.apprentice).length;
-    const ratio = apprentices[0]!.analysis.apprenticeProgram!.maxApprenticesPerJourneyworker;
-    if (ratio === null) continue;
-    const allowed = Math.floor(journey * ratio + 1e-9);
-    const excess = apprentices.slice(allowed);
-    for (const li of excess) {
+    // Registered apprentices at a program rate; unregistered ones are already checked at the journeyworker rate.
+    const apprenticeLines = list.filter((li) => li.line.apprentice && li.analysis.apprenticeProgram?.wagePercent != null);
+    if (apprenticeLines.length === 0) continue;
+    const ratio = apprenticeLines[0]!.analysis.apprenticeProgram!.maxApprenticesPerJourneyworker;
+    if (ratio === null || !(ratio > 0)) continue;
+    // Count people, not lines: a worker split over two lines is one journeyworker or apprentice.
+    const journeyworkers = new Set(list.filter((li) => !li.line.apprentice).map((li) => li.worker)).size;
+    const apprentices = [...new Set(apprenticeLines.map((li) => li.worker))];
+    const allowed = allowedApprentices(journeyworkers, ratio);
+    const excess = new Set(apprentices.slice(allowed));
+    for (const li of apprenticeLines) {
+      if (!excess.has(li.worker)) continue;
       const c = li.analysis.classification!;
-      const hours = li.line.totalST + li.line.totalOT;
       const journeyBase = c.baseRate;
       const journeyFringe = requiredFringe(c.fringe, c.baseRate);
-      const baseShort = Math.max(0, rate(journeyBase - li.line.rateST));
-      const excessBase = Math.max(0, rate(li.line.rateST - journeyBase));
-      const fringeShort = Math.max(
-        0,
-        rate(journeyFringe - li.line.fringePlanHourly - li.line.fringeCashHourly - excessBase),
-      );
+      const atJourneyRate = obligations(journeyBase, journeyFringe, li.line, li.analysis.paidOT, li.split);
+      const overtime = project.settings.overtimeRuleApplies ? atJourneyRate.otPremium + atJourneyRate.unreportedPremium : 0;
+      const full = cents(atJourneyRate.baseST + atJourneyRate.basePlainOT + atJourneyRate.fringe + overtime);
       // Subtract what the apprentice-rate checks already counted for this line.
-      const already = li.analysis.owed;
-      let amount = cents(extend(li.line.totalST, baseShort) + extend(hours, fringeShort));
-      if (project.settings.overtimeRuleApplies && li.line.totalOT > 0) {
-        const paidOT = li.analysis.paidOT ?? li.line.rateST * 1.5;
-        amount = cents(amount + extend(li.line.totalOT, Math.max(0, rate(journeyBase * 1.5 - paidOT))));
-      }
-      amount = Math.max(0, cents(amount - already));
+      const amount = Math.max(0, cents(full - li.analysis.owed));
       li.analysis.owed = cents(li.analysis.owed + amount);
       add({
         ruleId: 'apprentice-ratio',
         severity: 'violation',
         lineId: li.line.id,
         workerName: li.line.workerName,
-        title: `${li.line.workerName}: apprentice exceeds the ${ratio}:1 ratio for ${c.label}`,
-        detail: `${apprentices.length} apprentice(s) and ${journey} journeyworker(s) in ${c.label} this week; the program allows ${allowed}. Apprentices over the ratio must be paid the journeyworker rate (${formatRate(journeyBase)} + ${formatRate(journeyFringe)} fringe). Additional amount owed: ${formatMoney(amount)}.`,
+        title: `${li.line.workerName}: apprentice over the allowed ratio for ${c.label}`,
+        detail: `${apprentices.length} apprentice(s) and ${journeyworkers} journeyworker(s) in ${c.label} this week; the program allows ${ratioLabel(ratio)}, so ${allowed}. Apprentices over the ratio must be paid the journeyworker rate (${formatRate(journeyBase)} + ${formatRate(journeyFringe)} fringe). Additional amount owed: ${formatMoney(amount)}.`,
         amountOwed: amount,
       });
     }

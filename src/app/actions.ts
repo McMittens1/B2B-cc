@@ -70,12 +70,17 @@ export async function downloadStampedPayroll(view: ProjectView, payroll: Payroll
   return stamped.originalProblem;
 }
 
-/** Open a file the contractor submitted, as stored with the payroll. */
+/**
+ * Open a file the contractor submitted, as stored with the payroll. Only real PDFs (checked
+ * by their first bytes) open in a tab, and always as a PDF; anything else is downloaded, so
+ * a file can never be shown as a web page on the app's origin.
+ */
 export async function openStoredFile(fileId: string): Promise<void> {
   const file = await getFile(fileId);
   if (!file) throw new Error('The original file is not stored with this project.');
-  if (isPdfFile(file)) openBlob(file.data, 'application/pdf');
-  else downloadFile(file.name, file.data, file.type || 'application/octet-stream');
+  const bytes = new Uint8Array(await file.data.arrayBuffer());
+  if (String.fromCharCode(...bytes.subarray(0, 5)) === '%PDF-') openBlob(bytes, 'application/pdf');
+  else downloadFile(file.name, bytes, 'application/octet-stream');
 }
 
 /** Draft a letter or memo from the current review results. `contractorId` is null for the project memo. */

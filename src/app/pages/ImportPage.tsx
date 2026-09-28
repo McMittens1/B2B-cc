@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { newId, nowIso } from '../../db/db';
 import { blankContractor, saveContractor, saveImportProfile, savePayroll } from '../../db/repo';
 import { formatDate, isIsoDate, parseDateLoose, todayIso } from '../../engine/dates';
@@ -271,8 +271,23 @@ export function ImportPage({ view }: { view: ProjectView }) {
     return out;
   };
 
+  // Drafts being written right now: a second click (or "Save all" during a save) must not store a payroll twice.
+  const savingIds = useRef(new Set<string>());
+  const [saving, setSaving] = useState<string[]>([]);
+
   const save = async (d: Draft): Promise<boolean> => {
-    if (problems(d).length) return false;
+    if (problems(d).length || savingIds.current.has(d.id)) return false;
+    savingIds.current.add(d.id);
+    setSaving([...savingIds.current]);
+    try {
+      return await write(d);
+    } finally {
+      savingIds.current.delete(d.id);
+      setSaving([...savingIds.current]);
+    }
+  };
+
+  const write = async (d: Draft): Promise<boolean> => {
     const now = nowIso();
     const sourceKind: PayrollSourceKind = d.kind === 'no-work' || d.kind === 'keyed' ? 'manual' : d.kind;
     const payroll: Payroll = {
@@ -313,7 +328,10 @@ export function ImportPage({ view }: { view: ProjectView }) {
     }
   };
 
+  const [savingAll, setSavingAll] = useState(false);
   const saveAll = async () => {
+    if (savingAll) return;
+    setSavingAll(true);
     let n = 0;
     for (const d of drafts) {
       if (d.state === 'ready' && problems(d).length === 0) {
@@ -324,6 +342,7 @@ export function ImportPage({ view }: { view: ProjectView }) {
         }
       }
     }
+    setSavingAll(false);
     if (n) toast(`Saved ${n} payroll${n === 1 ? '' : 's'}`);
   };
 
@@ -351,7 +370,7 @@ export function ImportPage({ view }: { view: ProjectView }) {
             <Button icon="download" onClick={() => downloadFile('Wagebench payroll template.csv', templateCsv(), 'text/csv;charset=utf-8')} title="A spreadsheet layout you can ask contractors to send; it maps one-to-one">
               Spreadsheet template
             </Button>
-            {readyCount > 1 && <Button variant="primary" onClick={saveAll}>Save {readyCount} ready payrolls</Button>}
+            {readyCount > 1 && <Button variant="primary" onClick={saveAll} disabled={savingAll}>{savingAll ? 'Saving…' : `Save ${readyCount} ready payrolls`}</Button>}
           </>
         }
       />
@@ -398,6 +417,7 @@ export function ImportPage({ view }: { view: ProjectView }) {
               onEdit={() => setEditing(d.id)}
               onMap={() => setMapping(d.id)}
               onSave={() => void saveOne(d)}
+              saving={saving.includes(d.id) || savingAll}
               onDiscard={() => setDrafts((ds) => ds.filter((x) => x.id !== d.id))}
               onAddContractor={() => void addContractorFromDraft(d)}
             />
@@ -467,6 +487,7 @@ function DraftCard({
   onEdit,
   onMap,
   onSave,
+  saving,
   onDiscard,
   onAddContractor,
 }: {
@@ -479,6 +500,7 @@ function DraftCard({
   onEdit: () => void;
   onMap: () => void;
   onSave: () => void;
+  saving: boolean;
   onDiscard: () => void;
   onAddContractor: () => void;
 }) {
@@ -515,8 +537,8 @@ function DraftCard({
           <>
             {(d.kind === 'csv' || d.kind === 'xlsx') && d.table && <Button onClick={onMap}>Match columns…</Button>}
             {!d.noWork && <Button icon="edit" onClick={onEdit} disabled={d.state !== 'ready'}>{d.lines.length ? 'Check / edit lines' : 'Key in lines'}</Button>}
-            <Button variant="primary" onClick={onSave} disabled={d.state !== 'ready' || problems.length > 0}>
-              {d.supersedesPayrollId ? 'Save correction' : 'Save payroll'}
+            <Button variant="primary" onClick={onSave} disabled={d.state !== 'ready' || problems.length > 0 || saving}>
+              {saving ? 'Saving…' : d.supersedesPayrollId ? 'Save correction' : 'Save payroll'}
             </Button>
           </>
         )

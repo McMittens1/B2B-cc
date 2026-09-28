@@ -21,6 +21,7 @@ import {
   safeFileName,
   useToast,
 } from '../ui';
+import { neutralizeFormula } from '../../engine/docs/exports';
 
 /**
  * Exceptions: every finding across the project in one triage list. Violations stay open until
@@ -775,8 +776,7 @@ const CSV_HEADERS = [
 /** One CSV cell: numbers as plain decimals; text quoted when needed and guarded against formula injection. */
 function csvCell(value: string | number): string {
   if (typeof value === 'number') return value.toFixed(2);
-  let s = value;
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  const s = neutralizeFormula(value); // same guard as the document exports (leading spaces, full-width signs)
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 

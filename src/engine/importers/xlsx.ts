@@ -193,8 +193,14 @@ function entryData(bytes: Uint8Array, entry: ZipEntry): Uint8Array {
 
 const WORKSHEET = /^xl\/worksheets\/[^/]+\.xml$/i;
 const XML_PART = /\.(?:xml|rels|vml)$/i;
-const DIMENSION = /<(?:\w+:)?dimension\s[^>]*?\bref="([A-Z]{1,3})(\d{1,7})(?::([A-Z]{1,3})(\d{1,7}))?"/;
-const CELL_REF = /<(?:\w+:)?c\s[^>]*?\br="([A-Z]{1,3})(\d{1,7})"/g;
+// Attribute syntax as an XML parser accepts it: either quote, spaces around "=", any number of digits.
+const DIMENSION_TAG = /<(?:\w+:)?dimension\b[^>]*>/i;
+const DIMENSION = /<(?:\w+:)?dimension\b[^>]*?\bref\s*=\s*["']\s*([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?\s*["']/i;
+const CELL_REF = /<(?:\w+:)?c\b[^>]*?\br\s*=\s*["']\s*([A-Za-z]+)(\d+)\s*["']/gi;
+const ROW_REF = /<(?:\w+:)?row\b[^>]*?\br\s*=\s*["']\s*(\d+)\s*["']/gi;
+/** Excel's own sheet limits; a part claiming more was not written by a spreadsheet program. */
+const EXCEL_MAX_ROWS = 1_048_576;
+const EXCEL_MAX_COLUMNS = 16_384;
 
 async function inspectArchive(bytes: Uint8Array, limits: SpreadsheetLimits): Promise<void> {
   const entries = readCentralDirectory(bytes, limits);
@@ -282,13 +288,18 @@ class SheetAreaScanner {
       if (d) {
         this.dimension = d[0];
         this.note(d[3] ?? d[1]!, d[4] ?? d[2]!);
+      } else if (DIMENSION_TAG.test(chunk)) {
+        // A complete dimension element whose range cannot be read: fail closed rather than trust it.
+        throw new SpreadsheetError('A sheet in this workbook has an unreadable size declaration. Open it in Excel and save it again, or export the payroll as CSV.');
       }
     }
     for (const m of chunk.matchAll(CELL_REF)) this.note(m[1]!, m[2]!);
+    for (const m of chunk.matchAll(ROW_REF)) this.note('A', m[1]!);
     this.carry = chunk.slice(-256);
   }
 
   area(): number {
+    if (this.maxRow > EXCEL_MAX_ROWS || this.maxCol > EXCEL_MAX_COLUMNS) return Number.POSITIVE_INFINITY;
     return this.maxRow * this.maxCol;
   }
 
@@ -298,8 +309,8 @@ class SheetAreaScanner {
 
   private note(column: string, row: string) {
     let c = 0;
-    for (const ch of column) c = c * 26 + (ch.charCodeAt(0) - 64);
+    for (const ch of column.toUpperCase().slice(0, 8)) c = c * 26 + (ch.charCodeAt(0) - 64);
     this.maxCol = Math.max(this.maxCol, c);
-    this.maxRow = Math.max(this.maxRow, Number(row));
+    this.maxRow = Math.max(this.maxRow, row.length > 12 ? Number.POSITIVE_INFINITY : Number(row));
   }
 }

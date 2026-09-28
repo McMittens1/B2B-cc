@@ -119,6 +119,16 @@ test('backup, delete and restore round-trips a project', async ({ page }) => {
   const backup = fs.readFileSync(file!, 'utf8');
   expect(JSON.parse(backup).format).toBe('wagebench-backup');
 
+  // Restoring over the copy that is still here asks first, and Cancel changes nothing.
+  await page.goto('/');
+  await page.getByTestId('restore-input').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: Buffer.from(backup) });
+  const confirm = page.getByRole('dialog', { name: 'Replace the project in this browser?' });
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Cancel' }).click();
+  await expect(confirm).toBeHidden();
+  await page.getByRole('link', { name: /Harlow Creek/ }).first().click();
+  await page.getByRole('link', { name: /Project settings/ }).click();
+
   // Delete the project (type-to-confirm), then restore it from the file.
   await page.getByRole('button', { name: /Delete project/ }).first().click();
   const name = await page.getByRole('dialog').locator('strong').first().textContent();
@@ -185,6 +195,12 @@ test('bad input is explained, not crashed on', async ({ page }) => {
   await expect(page.locator('.panel').filter({ hasText: 'empty.csv' }).getByText('The file is empty.')).toBeVisible();
   await expect(page.locator('.panel').filter({ hasText: 'broken.pdf' }).locator('.alert')).toBeVisible();
   await expect(page.locator('.panel').filter({ hasText: 'notes.csv' }).locator('.alert').first()).toBeVisible();
+
+  // A malformed link shows "not found" instead of a blank page.
+  const here = page.url();
+  await page.goto('/#/p/%E0%A4%A/overview');
+  await expect(page.getByRole('heading', { name: 'Page not found' })).toBeVisible();
+  await page.goto(here);
 
   // A WD fragment with no rate identifiers is reported instead of saved.
   await page.getByRole('link', { name: /Wage determination/ }).click();

@@ -55,6 +55,7 @@ export const RULE_LABELS: Record<RuleId, string> = {
   'per-day-rate': 'Per-day rate',
   'fringe-footnote': 'Fringe footnote',
   'missing-week': 'Payroll not received',
+  'invalid-date': 'Date missing or invalid',
 };
 
 const SEVERITY_ORDER: Record<Severity, number> = { violation: 0, warning: 1, info: 2 };

@@ -146,13 +146,30 @@ export function resolveClassification(
 ): { key: string | null; source: 'mapping' | 'exact' | 'none' } {
   const norm = normalizeLabel(payrollLabel);
   const explicit = mappings.find((m) => m.contractorId === contractorId && m.payrollLabel === norm);
-  if (explicit) return { key: explicit.classificationKey, source: 'mapping' };
+  if (explicit) return { key: carryForwardKey(explicit.classificationKey, classifications), source: 'mapping' };
   if (norm === '') return { key: null, source: 'none' };
   const exact = classifications.filter(
     (c) => normalizeLabel(c.label) === norm || normalizeLabel(c.name) === norm,
   );
   if (exact.length === 1) return { key: exact[0]!.key, source: 'exact' };
   return { key: null, source: 'none' };
+}
+
+/**
+ * A saved match whose classification is no longer on the WD (a later modification renumbered
+ * the rate identifier, e.g. ELEC0001-005 to ELEC0001-006) follows the classification with the
+ * same label and rate identifier family, when there is exactly one.
+ */
+function carryForwardKey(key: string, classifications: readonly WDClassification[]): string {
+  if (key === NOT_ON_WD || classifications.some((c) => c.key === key)) return key;
+  const [rateId = '', slug = ''] = key.split('#');
+  if (!slug) return key;
+  const family = rateId.split('-')[0];
+  const candidates = classifications.filter((c) => {
+    const [cRateId = '', cSlug = ''] = c.key.split('#');
+    return cSlug === slug && cRateId.split('-')[0] === family;
+  });
+  return candidates.length === 1 ? candidates[0]!.key : key;
 }
 
 export function isNotOnWd(key: string | null): boolean {

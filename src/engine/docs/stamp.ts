@@ -404,7 +404,7 @@ const CHECKS: CheckDefinition[] = [
   },
   {
     label: (ctx) => `Submitted on time (within ${ctx.project.settings.lateAfterDays} days of the week ending)`,
-    rules: ['late-submission'],
+    rules: ['late-submission', 'invalid-date'],
     skip: (ctx) => (ctx.payroll.receivedDate ? null : 'Received date not recorded'),
   },
   {

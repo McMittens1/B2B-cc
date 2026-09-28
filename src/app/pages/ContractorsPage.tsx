@@ -859,7 +859,11 @@ function capitalize(s: string): string {
 }
 
 /** 1 → "1:1 ratio", 0.5 → "1:2 ratio", 3 → "3:1 ratio" (apprentices : journeyworkers). */
+/** Matches how the checks read the ratio: below 1 it is one apprentice per N journeyworkers (0.33 = 1 per 3). */
 function ratioText(r: number): string {
-  const fmt = (x: number) => String(Math.round(x * 100) / 100);
-  return r >= 1 ? `${fmt(r)}:1 ratio` : `1:${fmt(1 / r)} ratio`;
+  if (r >= 1) {
+    const n = Math.round(r * 100) / 100;
+    return `${n} apprentice${n === 1 ? '' : 's'} per journeyworker`;
+  }
+  return `1 apprentice per ${Math.round(1 / r)} journeyworkers`;
 }

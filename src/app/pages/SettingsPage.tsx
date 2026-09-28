@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react';
-import { exportProjectBackup } from '../../db/backup';
+import { backupToBlob, exportProjectBackup } from '../../db/backup';
 import { DEFAULT_SETTINGS, deleteProject, logActivity, updateProject } from '../../db/repo';
 import { formatDate, isIsoDate, todayIso } from '../../engine/dates';
 import { formatMoney } from '../../engine/money';
@@ -251,7 +251,7 @@ function useBackup(view: ProjectView) {
       const doc = await projectStore.mutate(() => exportProjectBackup(project.id));
       const base = safeFileName(project.name).slice(0, 60).trim() || 'Project';
       const fileName = `${base} backup ${todayIso()}.json`;
-      downloadFile(fileName, JSON.stringify(doc), 'application/json');
+      downloadFile(fileName, backupToBlob(doc), 'application/json');
       toast(`Backup downloaded: ${fileName}`);
     } catch (e) {
       toast(`Backup failed: ${(e as Error).message}`, 'bad');

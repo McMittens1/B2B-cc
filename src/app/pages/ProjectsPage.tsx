@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { listProjects, projectCounts } from '../../db/repo';
-import { restoreProjectBackup, BackupError } from '../../db/backup';
+import { BackupError, MAX_BACKUP_BYTES, existingCopy, readBackup, restoreProjectBackup, type ValidatedBackup } from '../../db/backup';
 import { formatDate } from '../../engine/dates';
 import type { Project } from '../../engine/types';
 import { navigate, projectPath, useDocumentTitle } from '../router';
-import { Button, EmptyState, PageHeader, Panel, Spinner, useToast } from '../ui';
+import { Button, ConfirmModal, EmptyState, PageHeader, Panel, Spinner, useToast } from '../ui';
 import { createDemoProject } from '../../sample/demo';
 
 interface Row {
@@ -19,6 +19,7 @@ export function ProjectsPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const toast = useToast();
   const restoreInput = useRef<HTMLInputElement>(null);
+  const [pending, setPending] = useState<{ backup: ValidatedBackup; local: Project } | null>(null);
 
   const load = async () => {
     const projects = await listProjects();
@@ -42,12 +43,23 @@ export function ProjectsPage() {
     }
   };
 
+  const write = async (backup: ValidatedBackup) => {
+    const project = await restoreProjectBackup(backup);
+    toast(`Restored "${project.name}"`);
+    navigate(projectPath(project.id));
+  };
+
   const restore = async (file: File) => {
     setBusy('restore');
     try {
-      const project = await restoreProjectBackup(await file.text());
-      toast(`Restored "${project.name}"`);
-      navigate(projectPath(project.id));
+      if (file.size > MAX_BACKUP_BYTES) {
+        throw new BackupError('This backup is too large for the browser to read back (over 400 MB). Split the project, or keep the original payroll files outside Wagebench.');
+      }
+      const backup = readBackup(await file.text());
+      const local = await existingCopy(backup);
+      // Replacing a project already in this browser discards anything done since the backup: ask first.
+      if (local) setPending({ backup, local });
+      else await write(backup);
     } catch (e) {
       toast(e instanceof BackupError ? e.message : `Restore failed: ${(e as Error).message}`, 'bad');
     } finally {
@@ -148,6 +160,43 @@ export function ProjectsPage() {
           </div>
         </Panel>
       )}
+      <ConfirmModal
+        open={pending !== null}
+        title="Replace the project in this browser?"
+        danger
+        confirmLabel="Replace with the backup"
+        message={
+          pending && (
+            <>
+              <p style={{ marginTop: 0 }}>
+                <strong>{pending.local.name}</strong> is already in this browser. Restoring replaces it with the backup, and
+                anything done here since the backup was made is lost.
+              </p>
+              <dl className="kv">
+                <dt>Copy in this browser</dt>
+                <dd>last changed {formatWhen(pending.local.updatedAt)}</dd>
+                <dt>Backup</dt>
+                <dd>made {formatWhen(pending.backup.exportedAt)} · {pending.backup.payrolls.length} payrolls</dd>
+              </dl>
+              <p className="small muted">To keep both, open the project and download its backup first.</p>
+            </>
+          )
+        }
+        onConfirm={async () => {
+          if (!pending) return;
+          try {
+            await write(pending.backup);
+          } catch (e) {
+            toast(e instanceof BackupError ? e.message : `Restore failed: ${(e as Error).message}`, 'bad');
+          }
+        }}
+        onClose={() => setPending(null)}
+      />
     </div>
   );
+}
+
+function formatWhen(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? 'at an unknown time' : d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 }

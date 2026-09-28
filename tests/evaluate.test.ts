@@ -38,9 +38,10 @@ const project: Project = {
 
 let seq = 0;
 function line(p: Partial<PayrollLine>): PayrollLine {
+  const n = ++seq;
   return {
-    id: `L${++seq}`,
-    workerName: 'Worker',
+    id: `L${n}`,
+    workerName: `Worker ${n}`, // distinct people unless a test says otherwise
     workerId: '1234',
     classification: 'Laborer Group 1',
     apprentice: false,
@@ -279,10 +280,18 @@ describe('apprentices', () => {
     expect(e.totalOwed).toBe(56); // (26.40 − 25.00) × 40
   });
 
-  it('warns when no registered program is on file', () => {
+  it('checks an apprentice with no registered program at the journeyworker rate', () => {
+    // 29 CFR 5.5(a)(4)(i): (44.00 − 26.40) × 40 = $704.00
     const e = run([payroll({ lines: [journey(), apprentice()] })]);
-    expect(rules(e)).toEqual(['apprentice-unregistered']);
-    expect(e.totalOwed).toBe(0);
+    expect(rules(e)).toEqual(['apprentice-unregistered', 'base-rate-below-wd']);
+    expect(e.totalOwed).toBe(704);
+  });
+
+  it("never uses another trade's program for an apprentice", () => {
+    const laborer = line({ classification: 'Laborer Group 1', apprentice: true, rateST: 16.11 });
+    const e = run([payroll({ lines: [laborer] })], { contractors: [elecContractor] });
+    expect(rules(e)).toEqual(['apprentice-unregistered', 'base-rate-below-wd']);
+    expect(e.totalOwed).toBe(429.6); // (26.85 − 16.11) × 40
   });
 
   it('requires the journeyworker rate for apprentices over the ratio', () => {
@@ -402,5 +411,159 @@ describe('restitution ledger', () => {
     expect(totals.paid).toBe(117.13);
     expect(totals.outstanding).toBe(60);
     expect(rows.find((r) => r.finding.key === base!.key)!.balance).toBe(60);
+  });
+});
+
+describe('review regressions: overtime', () => {
+  const g2 = [...baseMappings, mapping('Laborer Group 2', key('LABORER — GROUP 2'))];
+
+  it('treats overtime hours with nothing paid for them as unpaid, not unchecked', () => {
+    // Gross covers the 40 straight-time hours only: the 5 OT hours were paid $0.
+    const e = run([payroll({ lines: [line({ totalOT: 5, grossThisProject: 1074 })] })]);
+    expect(rules(e)).toEqual(['overtime-rate']);
+    expect(e.totalOwed).toBe(201.38); // 1.5 × 26.85 = 40.275 × 5 hrs
+  });
+
+  it('warns when overtime hours have no rate and no gross to derive one from', () => {
+    const e = run([payroll({ lines: [line({ totalOT: 5 })] })]);
+    expect(only(e, 'overtime-rate').map((f) => f.severity)).toEqual(['warning']);
+    expect(e.totalOwed).toBe(0);
+  });
+
+  it('counts the 40 hours per worker, across classifications', () => {
+    const same = { workerName: 'Dana Cruz', workerId: '5501' };
+    const e = run(
+      [payroll({ lines: [line({ ...same, totalST: 24 }), line({ ...same, classification: 'Laborer Group 2', totalST: 24, rateST: 27.6 })] })],
+      { mappings: g2 },
+    );
+    expect(rules(e)).toEqual(['overtime-unreported', 'overtime-unreported']);
+    expect(e.totalOwed).toBe(108.9); // 4 hrs × 0.5 × 26.85 + 4 hrs × 0.5 × 27.60
+  });
+
+  it('leaves cash paid in lieu of fringe out of the overtime rate', () => {
+    // $39.25 = $26.85 basic + $12.40 fringe in cash. OT is owed at 1.5 × 26.85 + 12.40 = $52.675.
+    const cash = { rateST: 39.25, fringePlanHourly: 0, totalOT: 5 };
+    expect(run([payroll({ lines: [line({ ...cash, rateOT: 52.675 })] })]).findings).toEqual([]);
+    // Paying 1.5 × the basic rate but no fringe on the overtime hours leaves the fringe owed on them.
+    const e = run([payroll({ lines: [line({ ...cash, rateOT: 40.275 })] })]);
+    expect(rules(e)).toEqual(['fringe-shortfall']);
+    expect(e.totalOwed).toBe(62);
+  });
+
+  it('requires 1.5x only on hours over 40 for the week', () => {
+    // Daily overtime at 1.25x in a 40-hour week is above the WD rate and owes nothing more.
+    const e = run([payroll({ lines: [line({ totalST: 32, totalOT: 8, rateOT: 33.5625 })] })]);
+    expect(e.findings).toEqual([]);
+  });
+
+  it('checks overtime-column hours against the WD rate when the overtime rule is off', () => {
+    const off = { ...project, settings: { ...project.settings, overtimeRuleApplies: false } };
+    const e = run([payroll({ lines: [line({ totalOT: 5, rateOT: 20 })] })], { project: off });
+    expect(rules(e)).toEqual(['base-rate-below-wd']);
+    expect(e.totalOwed).toBe(34.25); // (26.85 − 20.00) × 5
+  });
+
+  it('checks overtime on lines whose rate cannot be checked against the WD', () => {
+    const e = run([
+      payroll({ lines: [line({ classification: 'Welder', totalST: 50, rateST: 30 }), line({ classification: 'Diver', totalST: 50, rateST: 80 })] }),
+    ]);
+    expect(only(e, 'overtime-unreported').map((f) => f.amountOwed)).toEqual([150, 400]);
+  });
+});
+
+describe('review regressions: apprentices', () => {
+  const program: ApprenticeProgram = {
+    id: 'ap1',
+    name: 'IBEW-NECA JATC',
+    registeredWith: 'OA',
+    classification: 'Electrician',
+    wagePercent: 60,
+    fringePercent: null,
+    maxApprenticesPerJourneyworker: 1,
+  };
+  const journey = (p: Partial<PayrollLine> = {}) => line({ classification: 'Electrician', rateST: 44, fringePlanHourly: 22.32, ...p });
+  const apprentice = (p: Partial<PayrollLine> = {}) =>
+    line({ classification: 'Electrician', apprentice: true, rateST: 26.4, fringePlanHourly: 22.32, ...p });
+
+  it('includes the journeyworker overtime premium for an apprentice over the ratio', () => {
+    const e = run([payroll({ lines: [journey(), apprentice(), apprentice({ totalST: 45 })] })], {
+      contractors: [contractor({ apprenticePrograms: [program] })],
+    });
+    // At the journeyworker rate: 17.60 × 45 = 792 + 0.5 × 44 × 5 = 110.
+    expect(e.totalOwed).toBe(902);
+  });
+
+  it('counts journeyworkers as people, not payroll lines', () => {
+    const j = { workerName: 'Sam Ortiz', workerId: '7001', totalST: 20 };
+    const e = run([payroll({ lines: [journey(j), journey(j), apprentice(), apprentice()] })], {
+      contractors: [contractor({ apprenticePrograms: [program] })],
+    });
+    expect(only(e, 'apprentice-ratio')).toHaveLength(1);
+  });
+
+  it('reads a ratio below 1 as one apprentice per N journeyworkers', () => {
+    const oneInThree = { ...program, maxApprenticesPerJourneyworker: 0.33 };
+    const e = run([payroll({ lines: [journey(), journey(), journey(), apprentice()] })], {
+      contractors: [contractor({ apprenticePrograms: [oneInThree] })],
+    });
+    expect(e.findings).toEqual([]);
+  });
+});
+
+describe('review regressions: keys, dates and identifiers', () => {
+  it('keeps the same finding key when the base-rate rule variant changes', () => {
+    const lines = [line({ classification: 'Cement Mason', rateST: 24, fringePlanHourly: 6.12 })];
+    const plain = run([payroll({ id: 'PX', lines })]);
+    const eo = run([payroll({ id: 'PX', lines })], {
+      project: { ...project, settings: { ...project.settings, executiveOrderMinimumWage: 25 } },
+    });
+    expect(plain.findings.map((f) => [f.ruleId, f.amountOwed])).toEqual([['base-rate-below-wd', 7.2]]);
+    expect(eo.findings.map((f) => [f.ruleId, f.amountOwed])).toEqual([['eo-minimum-wage', 40]]);
+    expect(eo.findings[0]!.key).toBe(plain.findings[0]!.key);
+  });
+
+  it('flags full SSNs written with spaces or dots', () => {
+    for (const workerId of ['123 45 6789', '123.45.6789', '123456789']) {
+      expect(rules(run([payroll({ lines: [line({ workerId })] })]))).toEqual(['full-ssn']);
+    }
+  });
+
+  it('reports a bad date instead of failing the whole evaluation', () => {
+    const e = run([payroll({ weekEnding: '' as never, lines: [line({})] }), payroll({ receivedDate: '7/15/2026' as never, lines: [line({})] })]);
+    expect(only(e, 'invalid-date')).toHaveLength(2);
+  });
+
+  it('keeps job-title matches pointing at the same classification when the WD gains a line', () => {
+    const text = fs.readFileSync('fixtures/wd/sample-modern.txt', 'utf8');
+    const added = parseWageDetermination(
+      text.replace('     GROUP 2.....................$ 27.60', '     GROUP 1A....................$ 26.95            12.40\n     GROUP 2.....................$ 27.60'),
+    );
+    const before = wd.classifications.find((c) => c.label === 'LABORER — GROUP 2')!;
+    expect(added.classifications.find((c) => c.key === before.key)!.baseRate).toBe(27.6);
+  });
+
+  it('carries a job-title match forward when a modification renumbers the rate identifier', () => {
+    const renumbered = parseWageDetermination(fs.readFileSync('fixtures/wd/sample-modern.txt', 'utf8').replace('LABO0265-006', 'LABO0265-007'));
+    const e = run([payroll({ lines: [line({})] })], { wd: renumbered });
+    expect(e.findings).toEqual([]);
+    expect([...e.lines.values()][0]!.classification!.rateId).toBe('LABO0265-007');
+  });
+});
+
+describe('review regressions: restitution ledger', () => {
+  it('counts only what a correction actually paid', () => {
+    const who = { workerName: 'Javier Ruiz', workerId: '3021' };
+    const original = payroll({ id: 'ORIG', lines: [line({ ...who, rateST: 20 })] }); // short 6.85 × 40 = 274
+    const corrected = payroll({ id: 'CORR', supersedesPayrollId: 'ORIG', lines: [line({ ...who, rateST: 24.1 })] }); // still short 110
+    const e = run([original, corrected]);
+    const { totals } = buildLedger([...e.findings, ...e.historicalFindings], [], [contractor()]);
+    expect(totals).toMatchObject({ owed: 274, paid: 164, outstanding: 110 });
+  });
+
+  it('still shows a balance on a verified row that was only partly paid', () => {
+    const e = run([payroll({ lines: [line({ rateST: 24.1 })] })]);
+    const f = e.findings[0]!;
+    const { totals } = buildLedger(e.findings, [{ findingKey: f.key, projectId: 'p1', status: 'verified', amountPaid: 10, note: '', updatedAt: 'x' }], [contractor()]);
+    expect(totals).toMatchObject({ owed: 110, paid: 10, outstanding: 100 });
   });
 });

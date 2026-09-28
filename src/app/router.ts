@@ -49,7 +49,12 @@ export type ProjectSection =
 const SECTIONS: ProjectSection[] = ['overview', 'payrolls', 'import', 'exceptions', 'restitution', 'contractors', 'wd', 'documents', 'settings'];
 
 export function parseRoute(path: string): Route {
-  const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
+  let parts: string[];
+  try {
+    parts = path.split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    return { name: 'not-found' }; // malformed percent-encoding in a hand-edited or truncated link
+  }
   if (parts.length === 0) return { name: 'projects' };
   if (parts[0] === 'new') return { name: 'new-project' };
   if (parts[0] === 'p' && parts[1]) {
